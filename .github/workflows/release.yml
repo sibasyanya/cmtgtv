@@ -50,9 +50,9 @@ jobs:
           cd android
           gradle wrapper --gradle-version 8.10.2
           chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace --no-daemon
+          ./gradlew assembleRelease --stacktrace --info --no-daemon
 
-      - name: Upload Gradle Reports on Failure
+      - name: Upload Gradle Reports and Logs on Failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -60,6 +60,7 @@ jobs:
           path: |
             android/app/build/reports/
             android/app/build/outputs/logs/
+            ~/.gradle/daemon/
           if-no-files-found: ignore
 
       - name: Locate and Rename APK
