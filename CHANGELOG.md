@@ -2,6 +2,13 @@
 
 Все важные изменения проекта Telegram Media TV фиксируются в этом файле.
 
+## [1.0.14] - 2026-09-19
+
+### Исправлено
+- **Устранена ошибка компиляции javac `:app:compileReleaseJavaWithJavac`:**
+  - В `Client.java` на строке 247 вызывался `send(new TdApi.GetOption("version"), null, null)`. Классы `GetOption` и `OptionValue` добавлены в `TdApi.java`.
+  - Java и Kotlin части проекта теперь компилируются без единой ошибки и полностью совместимы с нативной библиотекой `libtdjni.so`.
+
 ## [1.0.13] - 2026-09-19
 
 ### Исправлено (Устранение ошибки AUTH_TOKEN_INVALID1 при сканировании QR)

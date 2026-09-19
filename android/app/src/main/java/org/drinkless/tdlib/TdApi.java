@@ -469,6 +469,34 @@ public final class TdApi {
         public int getConstructor() { return CONSTRUCTOR; }
     }
 
+    public static abstract class OptionValue extends Object {}
+
+    public static class OptionValueString extends OptionValue {
+        public static final int CONSTRUCTOR = -1883713066;
+        public String value;
+
+        public OptionValueString() {}
+        public OptionValueString(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public int getConstructor() { return CONSTRUCTOR; }
+    }
+
+    public static class GetOption extends Function<OptionValue> {
+        public static final int CONSTRUCTOR = -818465057;
+        public String name;
+
+        public GetOption() {}
+        public GetOption(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public int getConstructor() { return CONSTRUCTOR; }
+    }
+
     public static class SendMessage extends Function<Message> {
         public static final int CONSTRUCTOR = 887766544;
         public long chatId;
