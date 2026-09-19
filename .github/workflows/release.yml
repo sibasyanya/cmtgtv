@@ -52,6 +52,16 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --stacktrace --no-daemon
 
+      - name: Upload Gradle Reports on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-reports
+          path: |
+            android/app/build/reports/
+            android/app/build/outputs/logs/
+          if-no-files-found: ignore
+
       - name: Locate and Rename APK
         id: apk
         run: |

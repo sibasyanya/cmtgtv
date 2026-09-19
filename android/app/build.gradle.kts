@@ -12,17 +12,12 @@ android {
         applicationId = "com.tgmedia.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.0.7"
+        versionCode = 9
+        versionName = "1.0.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
-        }
-
-        // TDLib C++ JNI targets TV architectures
-        ndk {
-            abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
         }
     }
 
