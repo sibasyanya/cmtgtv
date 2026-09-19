@@ -108,11 +108,23 @@ fun QrAuthScreen(
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
-                        Text(
-                            text = "Ожидание сессии TDLib...",
-                            color = androidx.compose.ui.graphics.Color.Black,
-                            fontSize = 13.sp
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "Генерация QR-кода...",
+                                color = androidx.compose.ui.graphics.Color.Black,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Подключение к Telegram...",
+                                color = androidx.compose.ui.graphics.Color.DarkGray,
+                                fontSize = 11.sp
+                            )
+                        }
                     }
                 }
 
@@ -124,13 +136,35 @@ fun QrAuthScreen(
                     verticalArrangement = Arrangement.Center
                 ) {
                     Text(
-                        text = "1. Откройте Telegram на смартфоне\n2. Настройки → Устройства → Подключить\n3. Отсканируйте камерой QR-код слева",
+                        text = "1. Откройте Telegram на смартфоне\n2. Настройки → Устройства → Подключить\n3. Наведите камеру на QR-код слева",
                         fontSize = 15.sp,
                         color = androidx.compose.ui.graphics.Color(0xFF9E9EAF),
                         lineHeight = 22.sp
                     )
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Индикатор статуса TDLib сессии
+                    val statusText = when {
+                        !tdLibManager.isNativeLoaded -> "Безопасный режим (libtdjni.so загружается при первом релизе)"
+                        authState is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> "QR-код активен (готов к сканированию)"
+                        authState is TdApi.AuthorizationStateReady -> "Авторизован! Загрузка каналов..."
+                        else -> "Инициализация ядра Telegram..."
+                    }
+                    val statusColor = when {
+                        !tdLibManager.isNativeLoaded -> androidx.compose.ui.graphics.Color(0xFFFBBF24)
+                        authState is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> androidx.compose.ui.graphics.Color(0xFF34D399)
+                        else -> androidx.compose.ui.graphics.Color(0xFF38BDF8)
+                    }
+
+                    Text(
+                        text = "• $statusText",
+                        color = statusColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
 
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),

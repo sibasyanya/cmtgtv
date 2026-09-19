@@ -47,30 +47,38 @@ jobs:
 
       - name: Download Precompiled TDLib JNI Native Libraries
         run: |
-          echo "Setting up TDLib C++ native libraries for Android (armeabi-v7a, arm64-v8a, x86, x86_64)..."
+          echo "Setting up verified TDLib JNI native C++ libraries for Android..."
           mkdir -p android/app/src/main/jniLibs/armeabi-v7a
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           mkdir -p android/app/src/main/jniLibs/x86
           mkdir -p android/app/src/main/jniLibs/x86_64
 
-          # Загрузка проверенных готовых бинарников libtdjni.so для TDLib на Android
-          # Используем официальный релиз TDLib prebuilts от telegram-bot-sdk / tdlib-binaries
-          curl -sL --retry 3 "https://github.com/fornwall/tdlib-binaries/releases/download/v1.8.0/tdlib-android.tar.gz" -o /tmp/tdlib.tar.gz || true
-          if [ -f /tmp/tdlib.tar.gz ] && [ -s /tmp/tdlib.tar.gz ]; then
-            tar -xzf /tmp/tdlib.tar.gz -C android/app/src/main/jniLibs/ || true
-          fi
+          # Загружаем проверенный релиз FaiBah-Dev TDLibAndroidPrebuilt (v1.8.67-d1085f9-Java)
+          # содержащий точные нативные библиотеки libtdjni.so с JNI точками входа org.drinkless.tdlib.Client
+          BASE_URL="https://github.com/FaiBah-Dev/TDLibAndroidPrebuilt/releases/download/v1.8.67-d1085f9-Java"
+          
+          echo "Downloading armeabi-v7a..."
+          curl -sL --retry 3 "${BASE_URL}/tdlib-Java-armeabi-v7a.zip" -o /tmp/td_armv7.zip
+          unzip -q -o /tmp/td_armv7.zip -d /tmp/td_armv7
+          cp /tmp/td_armv7/libs/armeabi-v7a/libtdjni.so android/app/src/main/jniLibs/armeabi-v7a/
 
-          # Дополнительный надежный источник готовых libtdjni.so (armeabi-v7a и arm64-v8a для Android TV приставок)
-          if [ ! -f android/app/src/main/jniLibs/armeabi-v7a/libtdjni.so ]; then
-            curl -sL --retry 3 "https://raw.githubusercontent.com/DrKLO/Telegram/master/TMessagesProj/src/main/jniLibs/armeabi-v7a/libtmessages.29.so" -o /dev/null || true
-            curl -sL --retry 3 "https://github.com/Free-Open-Source-Android-Apps/tdlib-prebuilt/releases/download/v1.8.30/tdlib-android-1.8.30.zip" -o /tmp/tdlib2.zip || true
-            if [ -f /tmp/tdlib2.zip ] && [ -s /tmp/tdlib2.zip ]; then
-              unzip -q -o /tmp/tdlib2.zip -d android/app/src/main/jniLibs/ || true
-            fi
-          fi
+          echo "Downloading arm64-v8a..."
+          curl -sL --retry 3 "${BASE_URL}/tdlib-Java-arm64-v8a.zip" -o /tmp/td_arm64.zip
+          unzip -q -o /tmp/td_arm64.zip -d /tmp/td_arm64
+          cp /tmp/td_arm64/libs/arm64-v8a/libtdjni.so android/app/src/main/jniLibs/arm64-v8a/
 
-          echo "Listing available jniLibs architectures:"
-          ls -la android/app/src/main/jniLibs/ || true
+          echo "Downloading x86..."
+          curl -sL --retry 3 "${BASE_URL}/tdlib-Java-x86.zip" -o /tmp/td_x86.zip
+          unzip -q -o /tmp/td_x86.zip -d /tmp/td_x86
+          cp /tmp/td_x86/libs/x86/libtdjni.so android/app/src/main/jniLibs/x86/
+
+          echo "Downloading x86_64..."
+          curl -sL --retry 3 "${BASE_URL}/tdlib-Java-x86_64.zip" -o /tmp/td_x86_64.zip
+          unzip -q -o /tmp/td_x86_64.zip -d /tmp/td_x86_64
+          cp /tmp/td_x86_64/libs/x86_64/libtdjni.so android/app/src/main/jniLibs/x86_64/
+
+          echo "Verification of installed libtdjni.so libraries:"
+          ls -lh android/app/src/main/jniLibs/*/*.so
 
       - name: Build Android Release APK
         run: |
