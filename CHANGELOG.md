@@ -2,6 +2,14 @@
 
 Все важные изменения проекта Telegram Media TV фиксируются в этом файле.
 
+## [1.0.10] - 2026-09-19
+
+### Исправлено
+- **Добавлен обязательный конфигурационный файл `android/gradle.properties`:**
+  - Установлен флаг `android.useAndroidX=true` (устраняет фатальный сбой AGP `:app:mergeReleaseNativeLibs`: *"Configuration contains AndroidX dependencies, but android.useAndroidX property is not enabled"*).
+  - Включен флаг `android.nonTransitiveRClass=true` для ускоренной компиляции ресурсов.
+  - Настроены параметры памяти демона Gradle `org.gradle.jvmargs=-Xmx2048m`.
+
 ## [1.0.9] - 2026-09-19
 
 ### Исправлено
