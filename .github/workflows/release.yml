@@ -1,0 +1,74 @@
+name: Build Android TV APK & Publish Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build APK and Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: |
+          if [ -f "./android/gradlew" ]; then
+            chmod +x ./android/gradlew
+          fi
+
+      - name: Build Android Release APK
+        run: |
+          cd android
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Locate and Rename APK
+        id: apk
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            # If release build without signing key falls back to unsigned or debug
+            APK_PATH=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          fi
+          echo "Found APK: $APK_PATH"
+          cp "$APK_PATH" tgmedia-tv-${{ github.ref_name }}.apk
+          echo "apk_path=tgmedia-tv-${{ github.ref_name }}.apk" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Telegram Media TV ${{ github.ref_name }}"
+          body_path: CHANGELOG.md
+          files: ${{ steps.apk.outputs.apk_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Send Notification to Telegram Channel
+        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHANNEL_ID != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+        run: |
+          MESSAGE="🚀 *Вышло обновление Telegram Media TV ${{ github.ref_name }}!*
+
+          📺 *Что нового:*
+          Смотрите подробности в приложении или на GitHub.
+
+          ⬇️ *Скачать APK:*
+          https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/tgmedia-tv-${{ github.ref_name }}.apk"
+
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHANNEL_ID}" \
+            -d "parse_mode=Markdown" \
+            -d "text=${MESSAGE}"
