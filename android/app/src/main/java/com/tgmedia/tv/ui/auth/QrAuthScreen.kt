@@ -124,23 +124,59 @@ fun QrAuthScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // Кнопка обновления QR с поддержкой D-Pad фокуса
-            Button(
-                onClick = { tdLibManager.requestQrCodeAuthentication() },
-                modifier = Modifier
-                    .onFocusChanged { isButtonFocused = it.isFocused }
-                    .border(
-                        width = if (isButtonFocused) 3.dp else 1.dp,
-                        color = if (isButtonFocused) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color.Transparent,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    .focusable()
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                // Кнопка обновления QR с поддержкой D-Pad фокуса
+                Button(
+                    onClick = { tdLibManager.requestQrCodeAuthentication() },
+                    modifier = Modifier
+                        .onFocusChanged { isButtonFocused = it.isFocused }
+                        .border(
+                            width = if (isButtonFocused) 3.dp else 1.dp,
+                            color = if (isButtonFocused) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color.Transparent,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .focusable()
+                ) {
+                    Text(
+                        text = "Обновить QR-код",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)
+                    )
+                }
+
+                // Кнопка входа в тестовый режим пульта ТВ
+                var isDemoFocused by remember { mutableStateOf(false) }
+                Button(
+                    onClick = { onAuthenticated() },
+                    modifier = Modifier
+                        .onFocusChanged { isDemoFocused = it.isFocused }
+                        .border(
+                            width = if (isDemoFocused) 3.dp else 1.dp,
+                            color = if (isDemoFocused) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color.Transparent,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .focusable()
+                ) {
+                    Text(
+                        text = "Войти в режим проверки UI пульта (Тест)",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)
+                    )
+                }
+            }
+
+            if (!tdLibManager.isNativeLoaded) {
+                Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = "Обновить QR-код",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)
+                    text = "Запущено в безопасном режиме Android TV (бинарники TDLib C++ будут добавлены следующим шагом)",
+                    color = androidx.compose.ui.graphics.Color(0xFFFBBF24),
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center
                 )
             }
         }

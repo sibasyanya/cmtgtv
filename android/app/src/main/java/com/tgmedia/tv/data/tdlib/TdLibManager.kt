@@ -48,6 +48,8 @@ class TdLibManager private constructor() {
         @Volatile
         private var instance: TdLibManager? = null
 
+        private var isNativeLibraryLoaded = false
+
         fun getInstance(): TdLibManager {
             return instance ?: synchronized(this) {
                 instance ?: TdLibManager().also { instance = it }
@@ -57,30 +59,46 @@ class TdLibManager private constructor() {
         init {
             try {
                 System.loadLibrary("tdjni")
+                isNativeLibraryLoaded = true
                 Log.i(TAG, "Native C++ library libtdjni.so successfully loaded.")
-            } catch (e: UnsatisfiedLinkError) {
-                Log.e(TAG, "Failed to load libtdjni.so. Ensure native libraries exist in jniLibs", e)
+            } catch (e: Throwable) {
+                isNativeLibraryLoaded = false
+                Log.w(TAG, "Native library libtdjni.so is not available. Running in Safe/Demo mode.", e)
             }
         }
     }
 
+    // Флаг доступности нативной TDLib
+    val isNativeLoaded: Boolean get() = isNativeLibraryLoaded
+
     /**
      * Инициализация клиента TDLib с заданными параметрами.
-     * Запускает фоновый поток обработки сообщений C++ ядра.
+     * Защищена от UnsatisfiedLinkError. При отсутствии libtdjni переходит в безопасный режим.
      */
     fun initialize(config: TdLibConfig) {
         this.config = config
+
+        if (!isNativeLibraryLoaded) {
+            Log.w(TAG, "Native library not loaded. Providing demo QR code for Android TV UI preview.")
+            _qrCodeLink.value = "tg://login?token=DemoSafeModeTvPreviewToken"
+            return
+        }
 
         if (client != null) {
             Log.w(TAG, "TdLib client already initialized.")
             return
         }
 
-        client = Client.create(
-            { event -> handleIncomingEvent(event) },
-            { error -> Log.e(TAG, "TDLib update exception", error) },
-            { error -> Log.e(TAG, "TDLib default exception", error) }
-        )
+        try {
+            client = Client.create(
+                { event -> handleIncomingEvent(event) },
+                { error -> Log.e(TAG, "TDLib update exception", error) },
+                { error -> Log.e(TAG, "TDLib default exception", error) }
+            )
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to create Client due to native link error: ${e.message}", e)
+            _qrCodeLink.value = "tg://login?token=DemoSafeModeTvPreviewToken"
+        }
     }
 
     /**
@@ -227,6 +245,10 @@ class TdLibManager private constructor() {
      * Загрузка списка чатов (каналов, групп, личных переписок).
      */
     suspend fun loadChats(limit: Int = 30): Result<List<Long>> {
+        if (!isNativeLibraryLoaded || client == null) {
+            // Демонстрационный список каналов для проверки UI на ТВ пульте
+            return Result.success(listOf(1001L, 1002L, 1003L, 1004L, 1005L))
+        }
         val loadResult = execute(TdApi.LoadChats(limit))
         if (loadResult.isFailure) {
             return Result.failure(loadResult.exceptionOrNull() ?: Exception("Failed to load chats"))
