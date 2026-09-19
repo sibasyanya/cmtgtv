@@ -540,7 +540,7 @@ class TdLibManager private constructor() {
                 Telegram Media TV
               </h1>
               <span className="px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 text-[10px] font-mono font-semibold border border-sky-500/30">
-                v1.0.6
+                v1.0.7
               </span>
             </div>
             <p className="text-xs text-zinc-400">
