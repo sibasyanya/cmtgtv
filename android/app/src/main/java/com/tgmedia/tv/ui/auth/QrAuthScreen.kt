@@ -65,9 +65,8 @@ fun QrAuthScreen(
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
             modifier = Modifier
-                .width(760.dp)
+                .width(880.dp)
                 .background(
                     androidx.compose.ui.graphics.Color(0xFF14151E),
                     RoundedCornerShape(24.dp)
@@ -77,107 +76,117 @@ fun QrAuthScreen(
                     androidx.compose.ui.graphics.Color(0xFF262838),
                     RoundedCornerShape(24.dp)
                 )
-                .padding(48.dp)
+                .padding(horizontal = 40.dp, vertical = 28.dp)
         ) {
             Text(
                 text = "Вход в Telegram на Android TV",
-                fontSize = 28.sp,
+                fontSize = 26.sp,
                 fontWeight = FontWeight.Bold,
                 color = androidx.compose.ui.graphics.Color.White,
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Text(
-                text = "1. Откройте Telegram на телефоне\n2. Перейдите в Настройки → Устройства → Подключить устройство\n3. Наведите камеру на QR-код ниже",
-                fontSize = 15.sp,
-                color = androidx.compose.ui.graphics.Color(0xFF9E9EAF),
-                textAlign = TextAlign.Center,
-                lineHeight = 22.sp
-            )
-
-            Spacer(modifier = Modifier.height(28.dp))
-
-            // Контейнер QR-кода
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(260.dp)
-                    .background(androidx.compose.ui.graphics.Color.White, RoundedCornerShape(16.dp))
-                    .padding(16.dp)
-            ) {
-                if (qrBitmap != null) {
-                    Image(
-                        bitmap = qrBitmap!!.asImageBitmap(),
-                        contentDescription = "QR-код авторизации Telegram",
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Text(
-                        text = "Ожидание сессии TDLib...",
-                        color = androidx.compose.ui.graphics.Color.Black,
-                        fontSize = 14.sp
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Кнопка обновления QR с поддержкой D-Pad фокуса
-                Button(
-                    onClick = { tdLibManager.requestQrCodeAuthentication() },
+                // Контейнер QR-кода слева
+                Box(
+                    contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .onFocusChanged { isButtonFocused = it.isFocused }
-                        .border(
-                            width = if (isButtonFocused) 3.dp else 1.dp,
-                            color = if (isButtonFocused) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color.Transparent,
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        .focusable()
+                        .size(210.dp)
+                        .background(androidx.compose.ui.graphics.Color.White, RoundedCornerShape(16.dp))
+                        .padding(12.dp)
                 ) {
-                    Text(
-                        text = "Обновить QR-код",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)
-                    )
+                    if (qrBitmap != null) {
+                        Image(
+                            bitmap = qrBitmap!!.asImageBitmap(),
+                            contentDescription = "QR-код авторизации Telegram",
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Text(
+                            text = "Ожидание сессии TDLib...",
+                            color = androidx.compose.ui.graphics.Color.Black,
+                            fontSize = 13.sp
+                        )
+                    }
                 }
 
-                // Кнопка входа в тестовый режим пульта ТВ
-                var isDemoFocused by remember { mutableStateOf(false) }
-                Button(
-                    onClick = { onAuthenticated() },
-                    modifier = Modifier
-                        .onFocusChanged { isDemoFocused = it.isFocused }
-                        .border(
-                            width = if (isDemoFocused) 3.dp else 1.dp,
-                            color = if (isDemoFocused) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color.Transparent,
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        .focusable()
+                Spacer(modifier = Modifier.width(36.dp))
+
+                // Правая колонка с инструкцией и кнопками
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.Center
                 ) {
                     Text(
-                        text = "Войти в режим проверки UI пульта (Тест)",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)
+                        text = "1. Откройте Telegram на смартфоне\n2. Настройки → Устройства → Подключить\n3. Отсканируйте камерой QR-код слева",
+                        fontSize = 15.sp,
+                        color = androidx.compose.ui.graphics.Color(0xFF9E9EAF),
+                        lineHeight = 22.sp
                     )
-                }
-            }
 
-            if (!tdLibManager.isNativeLoaded) {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "Запущено в безопасном режиме Android TV (бинарники TDLib C++ будут добавлены следующим шагом)",
-                    color = androidx.compose.ui.graphics.Color(0xFFFBBF24),
-                    fontSize = 12.sp,
-                    textAlign = TextAlign.Center
-                )
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Кнопка обновления QR
+                        Button(
+                            onClick = { tdLibManager.requestQrCodeAuthentication() },
+                            modifier = Modifier
+                                .onFocusChanged { isButtonFocused = it.isFocused }
+                                .border(
+                                    width = if (isButtonFocused) 3.dp else 1.dp,
+                                    color = if (isButtonFocused) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color.Transparent,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .focusable()
+                        ) {
+                            Text(
+                                text = "Обновить QR",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                            )
+                        }
+
+                        // Кнопка входа в тестовый режим пульта ТВ
+                        var isDemoFocused by remember { mutableStateOf(false) }
+                        Button(
+                            onClick = { onAuthenticated() },
+                            modifier = Modifier
+                                .onFocusChanged { isDemoFocused = it.isFocused }
+                                .border(
+                                    width = if (isDemoFocused) 3.dp else 1.dp,
+                                    color = if (isDemoFocused) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color.Transparent,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .focusable()
+                        ) {
+                            Text(
+                                text = "Тестовый вход (Пульт)",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+
+                    if (!tdLibManager.isNativeLoaded) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Демо-режим Android TV UI: проверяйте навигацию пультом ДУ.",
+                            color = androidx.compose.ui.graphics.Color(0xFFFBBF24),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
             }
         }
     }

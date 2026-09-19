@@ -2,6 +2,7 @@ package com.tgmedia.tv
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
 import com.tgmedia.tv.ui.auth.QrAuthScreen
@@ -16,6 +17,7 @@ sealed class TvScreen {
 
 /**
  * Главная Activity для Android TV (Single Activity Architecture).
+ * Обрабатывает кнопку «Назад» с пульта ДУ телевизора без случайного закрытия приложения.
  */
 class MainActivity : ComponentActivity() {
 
@@ -24,6 +26,24 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var currentScreen by remember { mutableStateOf<TvScreen>(TvScreen.Auth) }
+
+            // Обработка кнопки «Назад» на пульте ТВ:
+            // Если находимся в чате -> возвращаемся в список чатов
+            // Если в списке чатов -> возвращаемся на экран авторизации/главный экран
+            // Если уже на Auth -> стандартный выход из приложения
+            BackHandler(enabled = currentScreen !is TvScreen.Auth) {
+                when (currentScreen) {
+                    is TvScreen.ChatDetail -> {
+                        currentScreen = TvScreen.ChatList
+                    }
+                    is TvScreen.ChatList -> {
+                        currentScreen = TvScreen.Auth
+                    }
+                    is TvScreen.Auth -> {
+                        // Позволяем системе свернуть приложение
+                    }
+                }
+            }
 
             when (val screen = currentScreen) {
                 is TvScreen.Auth -> {
