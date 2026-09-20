@@ -61,6 +61,16 @@ class TdLibManager private constructor() {
                 System.loadLibrary("tdjni")
                 isNativeLibraryLoaded = true
                 Log.i(TAG, "Native C++ library libtdjni.so successfully loaded.")
+
+                // Перенаправление внутренних логов ядра TDLib в Android Logcat
+                Client.setLogMessageHandler(3) { verbosityLevel, message ->
+                    Log.d("TDLibNative", "[$verbosityLevel] $message")
+                }
+                try {
+                    Client.execute(TdApi.SetLogVerbosityLevel(3))
+                } catch (t: Throwable) {
+                    Log.w(TAG, "SetLogVerbosityLevel warning", t)
+                }
             } catch (e: Throwable) {
                 isNativeLibraryLoaded = false
                 Log.w(TAG, "Native library libtdjni.so is not available. Running in Safe/Demo mode.", e)
@@ -70,6 +80,14 @@ class TdLibManager private constructor() {
 
     // Флаг доступности нативной TDLib
     val isNativeLoaded: Boolean get() = isNativeLibraryLoaded
+
+    // Текущее состояние сетевого соединения с серверами Telegram
+    private val _connectionState = MutableStateFlow<TdApi.ConnectionState?>(null)
+    val connectionState: StateFlow<TdApi.ConnectionState?> = _connectionState.asStateFlow()
+
+    // Текст последней ошибки TDLib (для вывода на экран ТВ)
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
     /**
      * Инициализация клиента TDLib с заданными параметрами.
@@ -95,9 +113,26 @@ class TdLibManager private constructor() {
                 { error -> Log.e(TAG, "TDLib update exception", error) },
                 { error -> Log.e(TAG, "TDLib default exception", error) }
             )
+            // Оповещаем TDLib о доступности сети сразу при создании клиента
+            updateNetworkType()
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to create Client due to native link error: ${e.message}", e)
+            _lastError.value = "Ошибка запуска TDLib: ${e.message}"
             _qrCodeLink.value = "tg://login?token=DemoSafeModeTvPreviewToken"
+        }
+    }
+
+    /**
+     * Уведомление ядра TDLib об активном сетевом соединении (Wi-Fi/Ethernet).
+     * Без вызова setNetworkType TDLib на Android может бесконечно ожидать сеть.
+     */
+    fun updateNetworkType() {
+        send(TdApi.SetNetworkType(TdApi.NetworkTypeOther())) { result ->
+            if (result is TdApi.Error) {
+                Log.w(TAG, "SetNetworkType error: ${result.message}")
+            } else {
+                Log.d(TAG, "SetNetworkType active confirmed.")
+            }
         }
     }
 
@@ -106,9 +141,14 @@ class TdLibManager private constructor() {
      */
     private fun handleIncomingEvent(event: TdApi.Object) {
         when (event) {
+            is TdApi.UpdateConnectionState -> {
+                val newState = event.state
+                Log.i(TAG, "ConnectionState updated: ${newState.javaClass.simpleName}")
+                _connectionState.value = newState
+            }
             is TdApi.UpdateAuthorizationState -> {
                 val newState = event.authorizationState
-                Log.d(TAG, "AuthorizationState updated: ${newState.javaClass.simpleName}")
+                Log.i(TAG, "AuthorizationState updated: ${newState.javaClass.simpleName}")
                 _authorizationState.value = newState
 
                 when (newState) {
@@ -122,11 +162,13 @@ class TdLibManager private constructor() {
                     is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> {
                         // Получен токен для генерации QR-кода на экране ТВ
                         _qrCodeLink.value = newState.link
+                        _lastError.value = null
                         Log.i(TAG, "Received QR Code Token link: ${newState.link}")
                     }
                     is TdApi.AuthorizationStateReady -> {
                         // Авторизация успешно пройдена с телефона
                         _qrCodeLink.value = null
+                        _lastError.value = null
                         Log.i(TAG, "Telegram Client AuthorizationStateReady! User is logged in.")
                     }
                     is TdApi.AuthorizationStateClosed -> {
@@ -148,11 +190,15 @@ class TdLibManager private constructor() {
     /**
      * Отправка параметров приложения в ядро TDLib.
      */
-    private fun sendTdlibParameters() {
+    fun sendTdlibParameters() {
         val currentConfig = config ?: run {
             Log.e(TAG, "Cannot set TdlibParameters: config is null")
+            _lastError.value = "Конфигурация приложения не задана"
             return
         }
+
+        // Проверяем сетевое подключение
+        updateNetworkType()
 
         val request = TdApi.SetTdlibParameters(
             currentConfig.useTestDc,
@@ -174,8 +220,11 @@ class TdLibManager private constructor() {
         send(request) { result ->
             if (result is TdApi.Error) {
                 Log.e(TAG, "SetTdlibParameters failed: ${result.message} (code: ${result.code})")
+                _lastError.value = "Ошибка параметров TDLib: [${result.code}] ${result.message}"
             } else {
                 Log.i(TAG, "SetTdlibParameters accepted by TDLib.")
+                _lastError.value = null
+                updateNetworkType()
             }
         }
     }
@@ -185,11 +234,36 @@ class TdLibManager private constructor() {
      */
     fun requestQrCodeAuthentication() {
         Log.i(TAG, "Requesting QR Code authentication from TDLib...")
+        updateNetworkType()
         send(TdApi.RequestQrCodeAuthentication(longArrayOf())) { result ->
             if (result is TdApi.Error) {
                 Log.e(TAG, "RequestQrCodeAuthentication error: ${result.message} (code: ${result.code})")
+                _lastError.value = "Ошибка запроса QR: [${result.code}] ${result.message}"
             } else {
-                Log.d(TAG, "RequestQrCodeAuthentication query sent successfully.")
+                Log.i(TAG, "RequestQrCodeAuthentication query sent successfully.")
+                _lastError.value = null
+            }
+        }
+    }
+
+    /**
+     * Принудительное обновление QR-кода по нажатию кнопки на пульте ТВ.
+     */
+    fun refreshQr() {
+        Log.i(TAG, "User triggered QR refresh.")
+        _lastError.value = null
+        updateNetworkType()
+        when (_authorizationState.value) {
+            is TdApi.AuthorizationStateWaitTdlibParameters -> {
+                sendTdlibParameters()
+            }
+            is TdApi.AuthorizationStateWaitPhoneNumber,
+            is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> {
+                requestQrCodeAuthentication()
+            }
+            else -> {
+                sendTdlibParameters()
+                requestQrCodeAuthentication()
             }
         }
     }

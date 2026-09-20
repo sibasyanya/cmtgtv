@@ -36,6 +36,8 @@ fun QrAuthScreen(
 ) {
     val tdLibManager = remember { TdLibManager.getInstance() }
     val authState by tdLibManager.authorizationState.collectAsState()
+    val connectionState by tdLibManager.connectionState.collectAsState()
+    val lastError by tdLibManager.lastError.collectAsState()
     val qrLink by tdLibManager.qrCodeLink.collectAsState()
 
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -48,12 +50,15 @@ fun QrAuthScreen(
         }
     }
 
-    // Генерация Bitmap QR-кода при получении ссылки tg://login?token=...
+    // Быстрая генерация Bitmap QR-кода при получении ссылки tg://login?token=...
     LaunchedEffect(qrLink) {
-        qrLink?.let { link ->
+        val link = qrLink
+        if (link != null) {
             withContext(Dispatchers.Default) {
-                qrBitmap = generateQrCodeBitmap(link, 600)
+                qrBitmap = generateQrCodeBitmap(link, 500)
             }
+        } else {
+            qrBitmap = null
         }
     }
 
@@ -66,7 +71,7 @@ fun QrAuthScreen(
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
-                .width(880.dp)
+                .width(920.dp)
                 .background(
                     androidx.compose.ui.graphics.Color(0xFF14151E),
                     RoundedCornerShape(24.dp)
@@ -97,13 +102,14 @@ fun QrAuthScreen(
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(210.dp)
+                        .size(220.dp)
                         .background(androidx.compose.ui.graphics.Color.White, RoundedCornerShape(16.dp))
                         .padding(12.dp)
                 ) {
-                    if (qrBitmap != null) {
+                    val currentBitmap = qrBitmap
+                    if (currentBitmap != null) {
                         Image(
-                            bitmap = qrBitmap!!.asImageBitmap(),
+                            bitmap = currentBitmap.asImageBitmap(),
                             contentDescription = "QR-код авторизации Telegram",
                             modifier = Modifier.fillMaxSize()
                         )
@@ -116,11 +122,18 @@ fun QrAuthScreen(
                                 text = "Генерация QR-кода...",
                                 color = androidx.compose.ui.graphics.Color.Black,
                                 fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
+                                fontWeight = FontWeight.SemiBold
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
+                            Spacer(modifier = Modifier.height(6.dp))
+                            val connHint = when (connectionState) {
+                                is TdApi.ConnectionStateWaitingForNetwork -> "Ожидание сети..."
+                                is TdApi.ConnectionStateConnecting -> "Подключение..."
+                                is TdApi.ConnectionStateUpdating -> "Синхронизация..."
+                                is TdApi.ConnectionStateReady -> "Сеть готова"
+                                else -> "Подключение к Telegram..."
+                            }
                             Text(
-                                text = "Подключение к Telegram...",
+                                text = connHint,
                                 color = androidx.compose.ui.graphics.Color.DarkGray,
                                 fontSize = 11.sp
                             )
@@ -144,16 +157,24 @@ fun QrAuthScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Индикатор статуса TDLib сессии
+                    // Подробный статус соединения и авторизации
                     val statusText = when {
-                        !tdLibManager.isNativeLoaded -> "Безопасный режим (libtdjni.so загружается при первом релизе)"
+                        !tdLibManager.isNativeLoaded -> "Безопасный демо-режим"
+                        lastError != null -> lastError!!
                         authState is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> "QR-код активен (готов к сканированию)"
-                        authState is TdApi.AuthorizationStateReady -> "Авторизован! Загрузка каналов..."
+                        authState is TdApi.AuthorizationStateWaitPhoneNumber -> "Запрос QR-кода с сервера Telegram..."
+                        authState is TdApi.AuthorizationStateWaitTdlibParameters -> "Инициализация ядра TDLib..."
+                        authState is TdApi.AuthorizationStateReady -> "Авторизован! Загрузка медиаканалов..."
+                        connectionState is TdApi.ConnectionStateWaitingForNetwork -> "Ожидание сети на телевизоре..."
+                        connectionState is TdApi.ConnectionStateConnecting -> "Подключение к серверам Telegram..."
+                        connectionState is TdApi.ConnectionStateUpdating -> "Обновление данных Telegram..."
                         else -> "Инициализация ядра Telegram..."
                     }
                     val statusColor = when {
+                        lastError != null -> androidx.compose.ui.graphics.Color(0xFFEF4444)
                         !tdLibManager.isNativeLoaded -> androidx.compose.ui.graphics.Color(0xFFFBBF24)
                         authState is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> androidx.compose.ui.graphics.Color(0xFF34D399)
+                        connectionState is TdApi.ConnectionStateWaitingForNetwork -> androidx.compose.ui.graphics.Color(0xFFFBBF24)
                         else -> androidx.compose.ui.graphics.Color(0xFF38BDF8)
                     }
 
@@ -161,7 +182,8 @@ fun QrAuthScreen(
                         text = "• $statusText",
                         color = statusColor,
                         fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.Medium,
+                        lineHeight = 16.sp
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
@@ -172,7 +194,7 @@ fun QrAuthScreen(
                     ) {
                         // Кнопка обновления QR
                         Button(
-                            onClick = { tdLibManager.requestQrCodeAuthentication() },
+                            onClick = { tdLibManager.refreshQr() },
                             modifier = Modifier
                                 .onFocusChanged { isButtonFocused = it.isFocused }
                                 .border(
@@ -227,18 +249,27 @@ fun QrAuthScreen(
 }
 
 /**
- * ZXing утилита для генерации монохромного Bitmap QR-кода.
+ * Оптимизированная ZXing генерация Bitmap QR-кода через прямой массив пикселей.
  */
-private fun generateQrCodeBitmap(contents: String, size: Int): Bitmap {
-    val writer = QRCodeWriter()
-    val bitMatrix = writer.encode(contents, BarcodeFormat.QR_CODE, size, size)
-    val width = bitMatrix.width
-    val height = bitMatrix.height
-    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
-    for (x in 0 until width) {
+private fun generateQrCodeBitmap(contents: String, size: Int): Bitmap? {
+    return try {
+        val writer = QRCodeWriter()
+        val hints = mapOf(com.google.zxing.EncodeHintType.MARGIN to 1)
+        val bitMatrix = writer.encode(contents, BarcodeFormat.QR_CODE, size, size, hints)
+        val width = bitMatrix.width
+        val height = bitMatrix.height
+        val pixels = IntArray(width * height)
         for (y in 0 until height) {
-            bitmap.setPixel(x, y, if (bitMatrix.get(x, y)) Color.BLACK else Color.WHITE)
+            val offset = y * width
+            for (x in 0 until width) {
+                pixels[offset + x] = if (bitMatrix.get(x, y)) Color.BLACK else Color.WHITE
+            }
         }
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        bitmap
+    } catch (e: Throwable) {
+        android.util.Log.e("QrAuthScreen", "Failed to generate QR bitmap", e)
+        null
     }
-    return bitmap
 }

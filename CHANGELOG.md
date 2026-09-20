@@ -2,6 +2,18 @@
 
 Все важные изменения проекта Telegram Media TV фиксируются в этом файле.
 
+## [1.0.16] - 2026-09-20
+
+### Исправлено (Генерация QR-кода и соединение ядра TDLib на Android TV)
+- **Активация сетевого стека TDLib через `SetNetworkType`:**
+  - В среде Android нативное C++ ядро TDLib по умолчанию ожидает уведомления о доступности сетевого интерфейса и зависает в статусе `ConnectionStateWaitingForNetwork`. Добавлены обязательные вызовы `SetNetworkType(NetworkTypeOther())` при старте и перед запросом QR-кода, что инициирует немедленное открытие сетевых сокетов к дата-центрам Telegram.
+- **Подробная диагностика статуса и обработка ошибок:**
+  - Добавлено отслеживание `UpdateConnectionState` (`ConnectionStateConnecting`, `ConnectionStateWaitingForNetwork`, `ConnectionStateReady`) и `lastError`. На экране ТВ теперь отображается точный статус вместо зависшей заглушки.
+  - Внутренние логи C++ ядра перенаправлены в Logcat (`Client.setLogMessageHandler` и `SetLogVerbosityLevel(3)`).
+- **Умное обновление QR-кода (`refreshQr`):**
+  - Кнопка «Обновить QR» на пульте ТВ теперь заново проверяет соединение, передает параметры ядра и повторно инициирует `RequestQrCodeAuthentication`.
+  - Ускорен рендеринг Bitmap QR-кода через массив пикселей и добавлен индикатор загрузки.
+
 ## [1.0.15] - 2026-09-20
 
 ### Исправлено (Устранение фатального сбоя JNI FatalError: Can't find static field [GIT_COMMIT_HASH])

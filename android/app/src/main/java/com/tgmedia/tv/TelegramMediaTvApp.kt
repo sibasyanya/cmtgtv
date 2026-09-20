@@ -24,8 +24,8 @@ class TelegramMediaTvApp : Application() {
                 databaseDirectory = tdlibDbDir.absolutePath,
                 filesDirectory = tdlibFilesDir.absolutePath,
                 deviceModel = "Android TV 10-Foot",
-                systemVersion = android.os.Build.VERSION.RELEASE,
-                applicationVersion = "1.0.10"
+                systemVersion = android.os.Build.VERSION.RELEASE ?: "14",
+                applicationVersion = "1.0.16"
             )
 
             TdLibManager.getInstance().initialize(config)
