@@ -5,9 +5,11 @@ import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -16,6 +18,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.drinkless.tdlib.Client
 import org.drinkless.tdlib.TdApi
 import kotlin.coroutines.resume
@@ -46,6 +49,16 @@ class TdLibManager private constructor() {
     // Настройки и статус прокси-сервера (для обхода блокировок в РФ)
     private val _proxySettings = MutableStateFlow(ProxySettings())
     val proxySettings: StateFlow<ProxySettings> = _proxySettings.asStateFlow()
+
+    // Режим входа: false = QR-код (по умолчанию для ТВ), true = ввод номера телефона
+    @Volatile
+    var isPhoneAuthMode: Boolean = false
+
+    // Флаги управления жизненным циклом и перезапуском без блокировок файла td.binlog
+    @Volatile
+    private var isRestartingSession: Boolean = false
+    @Volatile
+    private var pendingClearDatabase: Boolean = false
 
     // Поток входящих обновлений данных (новые медиа, статус скачивания)
     private val _updates = MutableSharedFlow<TdApi.Update>(extraBufferCapacity = 128)
@@ -207,8 +220,10 @@ class TdLibManager private constructor() {
                         sendTdlibParameters()
                     }
                     is TdApi.AuthorizationStateWaitPhoneNumber -> {
-                        // Для Android TV сразу запрашиваем авторизацию по QR-коду вместо ввода номера с пульта
-                        requestQrCodeAuthentication()
+                        // Для Android TV по умолчанию запускаем QR-код, если пользователь не выбрал ввод телефона
+                        if (!isPhoneAuthMode) {
+                            requestQrCodeAuthentication()
+                        }
                     }
                     is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> {
                         // Получен токен для генерации QR-кода на экране ТВ
@@ -217,8 +232,16 @@ class TdLibManager private constructor() {
                         _lastError.value = null
                         Log.i(TAG, "Received QR Code Token link: ${newState.link}")
                     }
+                    is TdApi.AuthorizationStateWaitCode -> {
+                        Log.i(TAG, "AuthorizationStateWaitCode: code sent to phone/SMS")
+                        _lastError.value = null
+                    }
+                    is TdApi.AuthorizationStateWaitPassword -> {
+                        Log.i(TAG, "AuthorizationStateWaitPassword: 2FA cloud password required")
+                        _lastError.value = null
+                    }
                     is TdApi.AuthorizationStateReady -> {
-                        // Авторизация успешно пройдена с телефона
+                        // Авторизация успешно пройдена
                         _isQrRequestInProgress.value = false
                         _qrCodeLink.value = null
                         _lastError.value = null
@@ -228,6 +251,22 @@ class TdLibManager private constructor() {
                         Log.i(TAG, "TDLib Client session closed.")
                         client = null
                         _isQrRequestInProgress.value = false
+                        if (isRestartingSession) {
+                            scope.launch(Dispatchers.IO) {
+                                delay(300) // Даем файловой системе безопасно освободить файловый дескриптор td.binlog
+                                if (pendingClearDatabase) {
+                                    clearDatabaseFiles()
+                                    pendingClearDatabase = false
+                                }
+                                withContext(Dispatchers.Main) {
+                                    isRestartingSession = false
+                                    val currentConfig = config
+                                    if (currentConfig != null) {
+                                        initialize(currentConfig)
+                                    }
+                                }
+                            }
+                        }
                     }
                     else -> Unit
                 }
@@ -302,7 +341,7 @@ class TdLibManager private constructor() {
                 Log.e(TAG, "RequestQrCodeAuthentication error: ${result.message} (code: ${result.code})")
                 _isQrRequestInProgress.value = false
                 if (result.code == 400 && result.message.contains("Another authorization query", ignoreCase = true)) {
-                    _lastError.value = "Запрос уже отправлен. Идет ожидание соединения с серверами Telegram..."
+                    _lastError.value = "Запрос уже отправлен. Ожидание ответа серверов Telegram..."
                 } else {
                     _lastError.value = "Ошибка запроса QR: [${result.code}] ${result.message}"
                 }
@@ -319,44 +358,77 @@ class TdLibManager private constructor() {
     fun refreshQr() {
         Log.i(TAG, "User triggered QR refresh.")
         if (_isQrRequestInProgress.value) {
-            _lastError.value = "Запрос уже ожидает ответа сервера Telegram. Если соединение зависло, используйте кнопку «Перезапустить»."
+            _lastError.value = "Запрос уже ожидает ответа сервера Telegram. Если соединение зависло, нажмите «Перезапустить»."
             return
         }
 
         _lastError.value = null
         updateNetworkType()
-        when (_authorizationState.value) {
+        when (val state = _authorizationState.value) {
             is TdApi.AuthorizationStateWaitTdlibParameters -> {
                 sendTdlibParameters()
             }
-            is TdApi.AuthorizationStateWaitPhoneNumber,
-            is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> {
+            is TdApi.AuthorizationStateWaitPhoneNumber -> {
+                isPhoneAuthMode = false
                 requestQrCodeAuthentication()
             }
+            is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> {
+                // Токен уже активен и обновляется Telegram автоматически
+                Log.i(TAG, "QR token link already active: ${state.link}")
+                _lastError.value = null
+            }
             else -> {
-                sendTdlibParameters()
-                requestQrCodeAuthentication()
+                if (client == null) {
+                    restartSession(clearDatabase = false)
+                } else {
+                    sendTdlibParameters()
+                }
             }
         }
     }
 
     /**
-     * Чистый перезапуск сессии TDLib при зависании сетевого соединения или блокировках.
+     * Безопасный перезапуск сессии TDLib.
+     * При clearDatabase=true полностью удаляет локальную базу td.binlog для устранения блокировок файлов.
      */
-    fun restartSession() {
-        Log.i(TAG, "Restarting TDLib session...")
+    fun restartSession(clearDatabase: Boolean = false) {
+        Log.i(TAG, "Restarting TDLib session (clearDatabase=$clearDatabase)...")
         _isQrRequestInProgress.value = false
-        _lastError.value = "Перезапуск сетевой сессии Telegram..."
         _qrCodeLink.value = null
-        try {
-            client?.send(TdApi.Close(), null)
-        } catch (t: Throwable) {
-            Log.w(TAG, "Error closing client", t)
+        _lastError.value = if (clearDatabase) "Очистка кэша и перезапуск TDLib..." else "Перезапуск сетевой сессии Telegram..."
+
+        val currentClient = client
+        if (currentClient != null) {
+            isRestartingSession = true
+            pendingClearDatabase = clearDatabase
+            try {
+                currentClient.send(TdApi.Close(), null)
+            } catch (t: Throwable) {
+                Log.w(TAG, "Error closing client", t)
+                isRestartingSession = false
+                client = null
+                if (clearDatabase) clearDatabaseFiles()
+                config?.let { initialize(it) }
+            }
+        } else {
+            if (clearDatabase) clearDatabaseFiles()
+            config?.let { initialize(it) }
         }
-        client = null
-        val currentConfig = config
-        if (currentConfig != null) {
-            initialize(currentConfig)
+    }
+
+    private fun clearDatabaseFiles() {
+        try {
+            config?.databaseDirectory?.let { path ->
+                val dir = File(path)
+                if (dir.exists()) {
+                    dir.listFiles()?.forEach { file ->
+                        file.deleteRecursively()
+                    }
+                    Log.i(TAG, "Database directory cleared: $path")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to clear database directory", e)
         }
     }
 
@@ -364,16 +436,44 @@ class TdLibManager private constructor() {
      * Отправка номера телефона для альтернативного входа на Android TV.
      */
     fun sendAuthenticationPhoneNumber(phoneNumber: String, onResult: (Boolean, String?) -> Unit) {
-        Log.i(TAG, "Sending phone number: $phoneNumber")
+        val trimmed = phoneNumber.trim()
+        Log.i(TAG, "Sending phone number: $trimmed")
         _lastError.value = null
+        isPhoneAuthMode = true
         updateNetworkType()
-        send(TdApi.SetAuthenticationPhoneNumber(phoneNumber.trim(), null)) { result ->
+
+        val activeClient = client
+        if (activeClient == null) {
+            val msg = "Клиент TDLib не запущен. Выполните перезапуск сессии."
+            _lastError.value = msg
+            onResult(false, msg)
+            return
+        }
+
+        // Если TDLib ожидает параметры, отправляем их перед отправкой номера
+        if (_authorizationState.value is TdApi.AuthorizationStateWaitTdlibParameters) {
+            sendTdlibParameters()
+        }
+
+        send(TdApi.SetAuthenticationPhoneNumber(trimmed, null)) { result ->
             if (result is TdApi.Error) {
                 Log.e(TAG, "SetAuthenticationPhoneNumber error: ${result.message} (${result.code})")
-                _lastError.value = "Ошибка номера: [${result.code}] ${result.message}"
-                onResult(false, "[${result.code}] ${result.message}")
+                val friendly = when (result.code) {
+                    400 -> when {
+                        result.message.contains("PHONE_NUMBER_INVALID", ignoreCase = true) ->
+                            "Неверный номер телефона. Укажите в международном формате с плюсом (например, +79120517638)."
+                        result.message.contains("Initialization parameters are needed", ignoreCase = true) ->
+                            "Инициализация ядра TDLib... Нажмите кнопку ещё раз через секунду."
+                        else -> "Ошибка [${result.code}]: ${result.message}"
+                    }
+                    429 -> "Слишком много запросов. Telegram временно ограничил отправку кодов на этот номер. Подождите несколько минут."
+                    else -> "Ошибка отправки номера: [${result.code}] ${result.message}"
+                }
+                _lastError.value = friendly
+                onResult(false, friendly)
             } else {
                 Log.i(TAG, "Phone number accepted, waiting for code...")
+                _lastError.value = null
                 onResult(true, null)
             }
         }
@@ -383,15 +483,32 @@ class TdLibManager private constructor() {
      * Проверка кода подтверждения Telegram (отправленного в приложение или SMS).
      */
     fun checkAuthenticationCode(code: String, onResult: (Boolean, String?) -> Unit) {
-        Log.i(TAG, "Checking auth code...")
+        val trimmed = code.trim()
+        Log.i(TAG, "Checking auth code: $trimmed")
         _lastError.value = null
-        send(TdApi.CheckAuthenticationCode(code.trim())) { result ->
+
+        val activeClient = client
+        if (activeClient == null) {
+            onResult(false, "Клиент TDLib не запущен")
+            return
+        }
+
+        send(TdApi.CheckAuthenticationCode(trimmed)) { result ->
             if (result is TdApi.Error) {
                 Log.e(TAG, "CheckAuthenticationCode error: ${result.message} (${result.code})")
-                _lastError.value = "Неверный код: [${result.code}] ${result.message}"
-                onResult(false, "[${result.code}] ${result.message}")
+                val friendly = when (result.code) {
+                    400 -> when {
+                        result.message.contains("PHONE_CODE_INVALID", ignoreCase = true) -> "Неверный код подтверждения. Проверьте цифры."
+                        result.message.contains("PHONE_CODE_EXPIRED", ignoreCase = true) -> "Срок действия кода истек. Запросите код заново."
+                        else -> "Ошибка [${result.code}]: ${result.message}"
+                    }
+                    else -> "Ошибка проверки кода: [${result.code}] ${result.message}"
+                }
+                _lastError.value = friendly
+                onResult(false, friendly)
             } else {
                 Log.i(TAG, "Auth code accepted successfully.")
+                _lastError.value = null
                 onResult(true, null)
             }
         }
@@ -403,13 +520,25 @@ class TdLibManager private constructor() {
     fun checkAuthenticationPassword(password: String, onResult: (Boolean, String?) -> Unit) {
         Log.i(TAG, "Checking 2FA password...")
         _lastError.value = null
+
+        val activeClient = client
+        if (activeClient == null) {
+            onResult(false, "Клиент TDLib не запущен")
+            return
+        }
+
         send(TdApi.CheckAuthenticationPassword(password.trim())) { result ->
             if (result is TdApi.Error) {
                 Log.e(TAG, "CheckAuthenticationPassword error: ${result.message} (${result.code})")
-                _lastError.value = "Неверный пароль 2FA: [${result.code}] ${result.message}"
-                onResult(false, "[${result.code}] ${result.message}")
+                val friendly = when {
+                    result.message.contains("PASSWORD_HASH_INVALID", ignoreCase = true) -> "Неверный пароль 2FA."
+                    else -> "Ошибка 2FA: [${result.code}] ${result.message}"
+                }
+                _lastError.value = friendly
+                onResult(false, friendly)
             } else {
                 Log.i(TAG, "2FA password accepted successfully.")
+                _lastError.value = null
                 onResult(true, null)
             }
         }
@@ -424,6 +553,12 @@ class TdLibManager private constructor() {
 
         if (!settings.enabled || settings.server.isBlank()) {
             disableProxy(onResult)
+            return
+        }
+
+        val activeClient = client
+        if (activeClient == null) {
+            onResult(false, "Клиент TDLib не запущен. Перезапустите сессию.")
             return
         }
 
@@ -453,9 +588,16 @@ class TdLibManager private constructor() {
      * Отключение активного Proxy и переход на прямое подключение.
      */
     fun disableProxy(onResult: (Boolean, String?) -> Unit = { _, _ -> }) {
-        val current = _proxySettings.value.copy(enabled = false)
+        val current = ProxySettings.DIRECT
         saveProxySettings(current)
         _proxySettings.value = current
+
+        val activeClient = client
+        if (activeClient == null) {
+            activeProxyId = null
+            onResult(true, null)
+            return
+        }
 
         send(TdApi.DisableProxy()) { result ->
             activeProxyId = null
@@ -484,7 +626,7 @@ class TdLibManager private constructor() {
     }
 
     private fun loadSavedProxySettings(): ProxySettings {
-        val ctx = appContext ?: return ProxySettings()
+        val ctx = appContext ?: return ProxySettings.DIRECT
         val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val enabled = prefs.getBoolean(PREF_PROXY_ENABLED, false)
         val server = prefs.getString(PREF_PROXY_SERVER, "") ?: ""
@@ -498,6 +640,13 @@ class TdLibManager private constructor() {
         val secret = prefs.getString(PREF_PROXY_SECRET, "") ?: ""
         val username = prefs.getString(PREF_PROXY_USERNAME, "") ?: ""
         val password = prefs.getString(PREF_PROXY_PASSWORD, "") ?: ""
+
+        // Очищаем недоступные локальные или устаревшие публичные адреса
+        if (server == "127.0.0.1" || server == "localhost" || server == "149.154.175.50" || server.contains("digitalresistance")) {
+            Log.w(TAG, "Clearing non-working default proxy: $server")
+            prefs.edit().putBoolean(PREF_PROXY_ENABLED, false).putString(PREF_PROXY_SERVER, "").apply()
+            return ProxySettings.DIRECT
+        }
 
         return ProxySettings(
             enabled = enabled,

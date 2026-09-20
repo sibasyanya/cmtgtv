@@ -19,33 +19,16 @@ data class ProxySettings(
         HTTP
     }
 
+    val isValid: Boolean
+        get() = server.isNotBlank() && port in 1..65535
+
     companion object {
-        // Популярный публичный MTProto прокси
-        val PRESET_MTPROTO_1 = ProxySettings(
-            enabled = true,
-            server = "proxy.digitalresistance.dog",
+        val DIRECT = ProxySettings(
+            enabled = false,
+            server = "",
             port = 443,
-            type = ProxyType.MTPROTO,
-            secret = "d41d8cd98f00b204e9800998ecf8427e"
-        )
-
-        // Альтернативный MTProto прокси
-        val PRESET_MTPROTO_2 = ProxySettings(
-            enabled = true,
-            server = "149.154.175.50",
-            port = 443,
-            type = ProxyType.MTPROTO,
-            secret = "ee000000000000000000000000000000007777772e676f6f676c652e636f6d"
-        )
-
-        // Локальный SOCKS5 (роутер, домашний VPN/V2Ray/Shadowsocks на 1080)
-        val PRESET_LOCAL_SOCKS5 = ProxySettings(
-            enabled = true,
-            server = "127.0.0.1",
-            port = 1080,
-            type = ProxyType.SOCKS5,
-            username = "",
-            password = ""
+            type = ProxyType.MTPROTO
         )
     }
 }
+

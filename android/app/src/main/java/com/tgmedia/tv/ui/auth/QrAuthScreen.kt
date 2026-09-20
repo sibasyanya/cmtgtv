@@ -129,15 +129,21 @@ fun QrAuthScreen(
                     ModeSwitchButton(
                         text = "QR-код",
                         isSelected = activeMode == AuthMode.QR_CODE,
-                        onClick = { activeMode = AuthMode.QR_CODE }
+                        onClick = {
+                            activeMode = AuthMode.QR_CODE
+                            tdLibManager.isPhoneAuthMode = false
+                        }
                     )
                     ModeSwitchButton(
                         text = "По номеру телефона",
                         isSelected = activeMode == AuthMode.PHONE_NUMBER,
-                        onClick = { activeMode = AuthMode.PHONE_NUMBER }
+                        onClick = {
+                            activeMode = AuthMode.PHONE_NUMBER
+                            tdLibManager.isPhoneAuthMode = true
+                        }
                     )
                     ModeSwitchButton(
-                        text = if (proxySettings.enabled) "Proxy (Включен)" else "Proxy (РФ)",
+                        text = if (proxySettings.enabled) "Proxy (Включен)" else "Proxy (Прямое)",
                         isSelected = activeMode == AuthMode.PROXY_SETTINGS,
                         onClick = { activeMode = AuthMode.PROXY_SETTINGS }
                     )
@@ -327,18 +333,18 @@ private fun QrCodeAuthView(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TvActionButton(
-                    text = if (isQrInProgress) "Запрос отправлен..." else "Обновить QR",
+                    text = if (isQrInProgress) "Запрос QR..." else "Обновить QR",
                     onClick = { tdLibManager.refreshQr() }
                 )
 
                 TvActionButton(
-                    text = "Перезапустить сессию",
-                    onClick = { tdLibManager.restartSession() }
+                    text = "Вход по номеру",
+                    onClick = onOpenPhone
                 )
 
                 TvActionButton(
-                    text = "Вход по телефону",
-                    onClick = onOpenPhone
+                    text = "Перезапуск сессии",
+                    onClick = { tdLibManager.restartSession(clearDatabase = false) }
                 )
             }
 
@@ -349,7 +355,12 @@ private fun QrCodeAuthView(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TvActionButton(
-                    text = "Настройки Proxy (РФ)",
+                    text = "Сброс базы и кэша",
+                    onClick = { tdLibManager.restartSession(clearDatabase = true) }
+                )
+
+                TvActionButton(
+                    text = if (proxySettings.enabled) "Proxy (Включен)" else "Настройки Proxy",
                     onClick = onOpenProxy
                 )
 
@@ -362,7 +373,7 @@ private fun QrCodeAuthView(
             // Подсказка при блокировках
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "💡 Если QR-код долго не появляется: сервера Telegram блокируются провайдером в РФ. Включите Proxy или войдите по телефону.",
+                text = "💡 Если зависло «Подключение»: используйте «Сброс базы и кэша» для очистки зависшей сессии TDLib или войдите по номеру телефона.",
                 color = androidx.compose.ui.graphics.Color(0xFF717188),
                 fontSize = 10.sp,
                 lineHeight = 14.sp
@@ -390,6 +401,25 @@ private fun PhoneNumberAuthView(
     onStatusMsgChange: (String?) -> Unit,
     onBackToQr: () -> Unit
 ) {
+    val currentAuthState by tdLibManager.authorizationState.collectAsState()
+    LaunchedEffect(currentAuthState) {
+        when (currentAuthState) {
+            is TdApi.AuthorizationStateWaitCode -> {
+                if (stage == 0) {
+                    onStageChange(1)
+                    onStatusMsgChange("Код отправлен в ваш Telegram на телефоне!")
+                }
+            }
+            is TdApi.AuthorizationStateWaitPassword -> {
+                if (stage != 2) {
+                    onStageChange(2)
+                    onStatusMsgChange("Требуется облачный пароль (2FA)")
+                }
+            }
+            else -> Unit
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -600,7 +630,7 @@ private fun PhoneNumberAuthView(
 }
 
 /**
- * Экран управления настройками Proxy (MTProto / SOCKS5).
+ * Экран управления настройками Proxy (MTProto / SOCKS5) и сброса сессии.
  */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -610,78 +640,147 @@ private fun ProxySettingsView(
     onClose: () -> Unit
 ) {
     var statusText by remember { mutableStateOf<String?>(null) }
+    var customServer by remember { mutableStateOf(currentSettings.server) }
+    var customPort by remember { mutableStateOf(if (currentSettings.port > 0) currentSettings.port.toString() else "443") }
+    var customSecret by remember { mutableStateOf(currentSettings.secret) }
+    var proxyType by remember { mutableStateOf(currentSettings.type) }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(300.dp)
+            .height(310.dp)
             .verticalScroll(rememberScrollState())
     ) {
         Text(
-            text = "Настройки Proxy (Обход блокировок серверов Telegram в РФ)",
+            text = "Настройки сети и подключение к Telegram",
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
             color = androidx.compose.ui.graphics.Color.White
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "В РФ многие интернет-провайдеры блокируют IP-адреса серверов Telegram. Включение прокси позволяет мгновенно подключиться и получить QR-код.",
+            text = "Управление прямым соединением, прокси-сервером (для обхода блокировок в РФ) и сбросом локальной базы TDLib.",
             fontSize = 12.sp,
             color = androidx.compose.ui.graphics.Color(0xFFA0A0B2),
             lineHeight = 17.sp
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Готовые пресеты
-        Text(
-            text = "Быстрое подключение проверенных пресетов:",
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = androidx.compose.ui.graphics.Color(0xFF38BDF8)
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
+        // Быстрые карточки режимов
         Row(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             PresetProxyCard(
-                title = "MTProto Пресет 1",
-                subtitle = "Digital Resistance (443)",
-                isActive = currentSettings.enabled && currentSettings.server == ProxySettings.PRESET_MTPROTO_1.server,
+                title = "Прямое подключение",
+                subtitle = if (!currentSettings.enabled) "Активно (Без Proxy)" else "Отключить Proxy",
+                isActive = !currentSettings.enabled,
                 modifier = Modifier.weight(1f),
                 onClick = {
-                    statusText = "Применение MTProto Proxy 1..."
-                    tdLibManager.applyProxy(ProxySettings.PRESET_MTPROTO_1) { ok, err ->
-                        statusText = if (ok) "MTProto Proxy 1 успешно подключен!" else (err ?: "Ошибка прокси")
+                    statusText = "Переход на прямое соединение..."
+                    tdLibManager.disableProxy { ok, _ ->
+                        statusText = if (ok) "Прямое соединение включено." else "Ошибка отключения proxy"
                     }
                 }
             )
 
             PresetProxyCard(
-                title = "MTProto Пресет 2",
-                subtitle = "Резервный MTProxy (443)",
-                isActive = currentSettings.enabled && currentSettings.server == ProxySettings.PRESET_MTPROTO_2.server,
+                title = "Сбросить кэш и базу",
+                subtitle = "Удалить td.binlog и перезапустить",
+                isActive = false,
                 modifier = Modifier.weight(1f),
                 onClick = {
-                    statusText = "Применение MTProto Proxy 2..."
-                    tdLibManager.applyProxy(ProxySettings.PRESET_MTPROTO_2) { ok, err ->
-                        statusText = if (ok) "MTProto Proxy 2 успешно подключен!" else (err ?: "Ошибка прокси")
-                    }
+                    statusText = "Очистка базы данных и перезапуск клиента TDLib..."
+                    tdLibManager.restartSession(clearDatabase = true)
+                    statusText = "Локальная база очищена. Клиент перезапущен с нуля."
                 }
             )
 
             PresetProxyCard(
-                title = "Локальный SOCKS5",
-                subtitle = "127.0.0.1:1080 (VPN/Туннель)",
-                isActive = currentSettings.enabled && currentSettings.server == ProxySettings.PRESET_LOCAL_SOCKS5.server,
+                title = "Перезапуск сессии",
+                subtitle = "Мягкий перезапуск TDLib",
+                isActive = false,
                 modifier = Modifier.weight(1f),
                 onClick = {
-                    statusText = "Применение локального SOCKS5..."
-                    tdLibManager.applyProxy(ProxySettings.PRESET_LOCAL_SOCKS5) { ok, err ->
-                        statusText = if (ok) "Локальный SOCKS5 подключен!" else (err ?: "Ошибка прокси")
+                    statusText = "Мягкий перезапуск сессии..."
+                    tdLibManager.restartSession(clearDatabase = false)
+                    statusText = "Сессия перезапущена."
+                }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Свой Proxy
+        Text(
+            text = "Пользовательский Proxy (MTProto / SOCKS5):",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = androidx.compose.ui.graphics.Color(0xFF38BDF8)
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(2f)
+                    .background(androidx.compose.ui.graphics.Color(0xFF1B1C28), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = customServer.ifEmpty { "Хост: например, proxy.example.com" },
+                    fontSize = 12.sp,
+                    color = if (customServer.isEmpty()) androidx.compose.ui.graphics.Color(0xFF6B7280) else androidx.compose.ui.graphics.Color.White
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .background(androidx.compose.ui.graphics.Color(0xFF1B1C28), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = "Порт: $customPort",
+                    fontSize = 12.sp,
+                    color = androidx.compose.ui.graphics.Color.White
+                )
+            }
+
+            TvActionButton(
+                text = if (proxyType == ProxySettings.ProxyType.MTPROTO) "Тип: MTProto" else "Тип: SOCKS5",
+                onClick = {
+                    proxyType = if (proxyType == ProxySettings.ProxyType.MTPROTO) {
+                        ProxySettings.ProxyType.SOCKS5
+                    } else {
+                        ProxySettings.ProxyType.MTPROTO
+                    }
+                }
+            )
+
+            TvActionButton(
+                text = "Применить Proxy",
+                onClick = {
+                    val portNum = customPort.toIntOrNull() ?: 443
+                    if (customServer.isBlank()) {
+                        statusText = "Укажите адрес сервера прокси"
+                    } else {
+                        statusText = "Применение прокси $customServer:$portNum..."
+                        val settings = ProxySettings(
+                            enabled = true,
+                            server = customServer.trim(),
+                            port = portNum,
+                            type = proxyType,
+                            secret = customSecret.trim()
+                        )
+                        tdLibManager.applyProxy(settings) { ok, err ->
+                            statusText = if (ok) "Proxy успешно подключен!" else (err ?: "Ошибка подключения")
+                        }
                     }
                 }
             )
@@ -693,20 +792,6 @@ private fun ProxySettingsView(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (currentSettings.enabled) {
-                TvActionButton(text = "Отключить Proxy (Прямое соединение)") {
-                    statusText = "Отключение прокси..."
-                    tdLibManager.disableProxy { ok, _ ->
-                        statusText = if (ok) "Proxy отключен. Переход на прямое соединение." else "Ошибка отключения"
-                    }
-                }
-            }
-
-            TvActionButton(text = "Перезапустить сессию") {
-                tdLibManager.restartSession()
-                statusText = "Сессия перезапущена с новыми параметрами сети."
-            }
-
             TvActionButton(text = "Назад к QR-коду", onClick = onClose)
         }
 
