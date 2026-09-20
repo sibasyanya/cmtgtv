@@ -1,5 +1,9 @@
 package com.tgmedia.tv.data.tdlib
 
+import android.content.Context
+import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,15 +39,33 @@ class TdLibManager private constructor() {
     private val _qrCodeLink = MutableStateFlow<String?>(null)
     val qrCodeLink: StateFlow<String?> = _qrCodeLink.asStateFlow()
 
+    // Флаг активного запроса QR кода (для предотвращения ошибки [400] Another authorization query has started)
+    private val _isQrRequestInProgress = MutableStateFlow(false)
+    val isQrRequestInProgress: StateFlow<Boolean> = _isQrRequestInProgress.asStateFlow()
+
+    // Настройки и статус прокси-сервера (для обхода блокировок в РФ)
+    private val _proxySettings = MutableStateFlow(ProxySettings())
+    val proxySettings: StateFlow<ProxySettings> = _proxySettings.asStateFlow()
+
     // Поток входящих обновлений данных (новые медиа, статус скачивания)
     private val _updates = MutableSharedFlow<TdApi.Update>(extraBufferCapacity = 128)
     val updates: SharedFlow<TdApi.Update> = _updates.asSharedFlow()
 
     private var client: Client? = null
     private var config: TdLibConfig? = null
+    private var appContext: Context? = null
+    private var activeProxyId: Int? = null
 
     companion object {
         private const val TAG = "TdLibManager"
+        private const val PREFS_NAME = "tgmedia_tv_prefs"
+        private const val PREF_PROXY_ENABLED = "proxy_enabled"
+        private const val PREF_PROXY_SERVER = "proxy_server"
+        private const val PREF_PROXY_PORT = "proxy_port"
+        private const val PREF_PROXY_TYPE = "proxy_type"
+        private const val PREF_PROXY_SECRET = "proxy_secret"
+        private const val PREF_PROXY_USERNAME = "proxy_username"
+        private const val PREF_PROXY_PASSWORD = "proxy_password"
 
         @Volatile
         private var instance: TdLibManager? = null
@@ -90,6 +112,16 @@ class TdLibManager private constructor() {
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
     /**
+     * Инициализация клиента TDLib с Context и настройками.
+     */
+    fun initialize(context: Context, config: TdLibConfig) {
+        this.appContext = context.applicationContext
+        val savedProxy = loadSavedProxySettings()
+        _proxySettings.value = savedProxy
+        initialize(config)
+    }
+
+    /**
      * Инициализация клиента TDLib с заданными параметрами.
      * Защищена от UnsatisfiedLinkError. При отсутствии libtdjni переходит в безопасный режим.
      */
@@ -115,6 +147,12 @@ class TdLibManager private constructor() {
             )
             // Оповещаем TDLib о доступности сети сразу при создании клиента
             updateNetworkType()
+
+            // Если был сохранен включенный прокси, активируем его
+            val currentProxy = _proxySettings.value
+            if (currentProxy.enabled && currentProxy.server.isNotBlank()) {
+                applyProxy(currentProxy)
+            }
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to create Client due to native link error: ${e.message}", e)
             _lastError.value = "Ошибка запуска TDLib: ${e.message}"
@@ -127,11 +165,24 @@ class TdLibManager private constructor() {
      * Без вызова setNetworkType TDLib на Android может бесконечно ожидать сеть.
      */
     fun updateNetworkType() {
-        send(TdApi.SetNetworkType(TdApi.NetworkTypeOther())) { result ->
+        val networkType: TdApi.NetworkType = appContext?.let { ctx ->
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val activeNet = cm?.activeNetwork
+            val caps = cm?.getNetworkCapabilities(activeNet)
+            when {
+                caps == null -> TdApi.NetworkTypeOther()
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> TdApi.NetworkTypeWiFi()
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> TdApi.NetworkTypeOther()
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> TdApi.NetworkTypeMobile()
+                else -> TdApi.NetworkTypeOther()
+            }
+        } ?: TdApi.NetworkTypeOther()
+
+        send(TdApi.SetNetworkType(networkType)) { result ->
             if (result is TdApi.Error) {
                 Log.w(TAG, "SetNetworkType error: ${result.message}")
             } else {
-                Log.d(TAG, "SetNetworkType active confirmed.")
+                Log.d(TAG, "SetNetworkType active confirmed ($networkType).")
             }
         }
     }
@@ -161,12 +212,14 @@ class TdLibManager private constructor() {
                     }
                     is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> {
                         // Получен токен для генерации QR-кода на экране ТВ
+                        _isQrRequestInProgress.value = false
                         _qrCodeLink.value = newState.link
                         _lastError.value = null
                         Log.i(TAG, "Received QR Code Token link: ${newState.link}")
                     }
                     is TdApi.AuthorizationStateReady -> {
                         // Авторизация успешно пройдена с телефона
+                        _isQrRequestInProgress.value = false
                         _qrCodeLink.value = null
                         _lastError.value = null
                         Log.i(TAG, "Telegram Client AuthorizationStateReady! User is logged in.")
@@ -174,6 +227,7 @@ class TdLibManager private constructor() {
                     is TdApi.AuthorizationStateClosed -> {
                         Log.i(TAG, "TDLib Client session closed.")
                         client = null
+                        _isQrRequestInProgress.value = false
                     }
                     else -> Unit
                 }
@@ -231,16 +285,29 @@ class TdLibManager private constructor() {
 
     /**
      * Запрос авторизации по QR коду для ТВ (без ввода логина/пароля с пульта ДУ).
+     * Защищен от повторного вызова во время выполнения (исключает ошибку [400] Another authorization query has started).
      */
     fun requestQrCodeAuthentication() {
+        if (_isQrRequestInProgress.value) {
+            Log.i(TAG, "RequestQrCodeAuthentication is already in progress, skipping duplicate call.")
+            return
+        }
+
         Log.i(TAG, "Requesting QR Code authentication from TDLib...")
+        _isQrRequestInProgress.value = true
         updateNetworkType()
+
         send(TdApi.RequestQrCodeAuthentication(longArrayOf())) { result ->
             if (result is TdApi.Error) {
                 Log.e(TAG, "RequestQrCodeAuthentication error: ${result.message} (code: ${result.code})")
-                _lastError.value = "Ошибка запроса QR: [${result.code}] ${result.message}"
+                _isQrRequestInProgress.value = false
+                if (result.code == 400 && result.message.contains("Another authorization query", ignoreCase = true)) {
+                    _lastError.value = "Запрос уже отправлен. Идет ожидание соединения с серверами Telegram..."
+                } else {
+                    _lastError.value = "Ошибка запроса QR: [${result.code}] ${result.message}"
+                }
             } else {
-                Log.i(TAG, "RequestQrCodeAuthentication query sent successfully.")
+                Log.i(TAG, "RequestQrCodeAuthentication query sent successfully, awaiting link...")
                 _lastError.value = null
             }
         }
@@ -251,6 +318,11 @@ class TdLibManager private constructor() {
      */
     fun refreshQr() {
         Log.i(TAG, "User triggered QR refresh.")
+        if (_isQrRequestInProgress.value) {
+            _lastError.value = "Запрос уже ожидает ответа сервера Telegram. Если соединение зависло, используйте кнопку «Перезапустить»."
+            return
+        }
+
         _lastError.value = null
         updateNetworkType()
         when (_authorizationState.value) {
@@ -266,6 +338,176 @@ class TdLibManager private constructor() {
                 requestQrCodeAuthentication()
             }
         }
+    }
+
+    /**
+     * Чистый перезапуск сессии TDLib при зависании сетевого соединения или блокировках.
+     */
+    fun restartSession() {
+        Log.i(TAG, "Restarting TDLib session...")
+        _isQrRequestInProgress.value = false
+        _lastError.value = "Перезапуск сетевой сессии Telegram..."
+        _qrCodeLink.value = null
+        try {
+            client?.send(TdApi.Close(), null)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Error closing client", t)
+        }
+        client = null
+        val currentConfig = config
+        if (currentConfig != null) {
+            initialize(currentConfig)
+        }
+    }
+
+    /**
+     * Отправка номера телефона для альтернативного входа на Android TV.
+     */
+    fun sendAuthenticationPhoneNumber(phoneNumber: String, onResult: (Boolean, String?) -> Unit) {
+        Log.i(TAG, "Sending phone number: $phoneNumber")
+        _lastError.value = null
+        updateNetworkType()
+        send(TdApi.SetAuthenticationPhoneNumber(phoneNumber.trim(), null)) { result ->
+            if (result is TdApi.Error) {
+                Log.e(TAG, "SetAuthenticationPhoneNumber error: ${result.message} (${result.code})")
+                _lastError.value = "Ошибка номера: [${result.code}] ${result.message}"
+                onResult(false, "[${result.code}] ${result.message}")
+            } else {
+                Log.i(TAG, "Phone number accepted, waiting for code...")
+                onResult(true, null)
+            }
+        }
+    }
+
+    /**
+     * Проверка кода подтверждения Telegram (отправленного в приложение или SMS).
+     */
+    fun checkAuthenticationCode(code: String, onResult: (Boolean, String?) -> Unit) {
+        Log.i(TAG, "Checking auth code...")
+        _lastError.value = null
+        send(TdApi.CheckAuthenticationCode(code.trim())) { result ->
+            if (result is TdApi.Error) {
+                Log.e(TAG, "CheckAuthenticationCode error: ${result.message} (${result.code})")
+                _lastError.value = "Неверный код: [${result.code}] ${result.message}"
+                onResult(false, "[${result.code}] ${result.message}")
+            } else {
+                Log.i(TAG, "Auth code accepted successfully.")
+                onResult(true, null)
+            }
+        }
+    }
+
+    /**
+     * Проверка облачного пароля двухфакторной аутентификации (2FA).
+     */
+    fun checkAuthenticationPassword(password: String, onResult: (Boolean, String?) -> Unit) {
+        Log.i(TAG, "Checking 2FA password...")
+        _lastError.value = null
+        send(TdApi.CheckAuthenticationPassword(password.trim())) { result ->
+            if (result is TdApi.Error) {
+                Log.e(TAG, "CheckAuthenticationPassword error: ${result.message} (${result.code})")
+                _lastError.value = "Неверный пароль 2FA: [${result.code}] ${result.message}"
+                onResult(false, "[${result.code}] ${result.message}")
+            } else {
+                Log.i(TAG, "2FA password accepted successfully.")
+                onResult(true, null)
+            }
+        }
+    }
+
+    /**
+     * Включение и применение настроек Proxy (MTProto / SOCKS5).
+     */
+    fun applyProxy(settings: ProxySettings, onResult: (Boolean, String?) -> Unit = { _, _ -> }) {
+        saveProxySettings(settings)
+        _proxySettings.value = settings
+
+        if (!settings.enabled || settings.server.isBlank()) {
+            disableProxy(onResult)
+            return
+        }
+
+        val proxyType: TdApi.ProxyType = when (settings.type) {
+            ProxySettings.ProxyType.SOCKS5 -> TdApi.ProxyTypeSocks5(settings.username, settings.password)
+            ProxySettings.ProxyType.HTTP -> TdApi.ProxyTypeHttp(settings.username, settings.password, false)
+            ProxySettings.ProxyType.MTPROTO -> TdApi.ProxyTypeMtproto(settings.secret)
+        }
+
+        val proxy = TdApi.Proxy(settings.server.trim(), settings.port, proxyType)
+        send(TdApi.AddProxy(proxy, true, "Android TV Proxy")) { result ->
+            if (result is TdApi.AddedProxy) {
+                Log.i(TAG, "Proxy enabled successfully: ${settings.server}:${settings.port} (ID: ${result.id})")
+                activeProxyId = result.id
+                _lastError.value = null
+                updateNetworkType()
+                onResult(true, null)
+            } else if (result is TdApi.Error) {
+                Log.e(TAG, "Failed to enable proxy: ${result.message} (${result.code})")
+                _lastError.value = "Ошибка Proxy: [${result.code}] ${result.message}"
+                onResult(false, "[${result.code}] ${result.message}")
+            }
+        }
+    }
+
+    /**
+     * Отключение активного Proxy и переход на прямое подключение.
+     */
+    fun disableProxy(onResult: (Boolean, String?) -> Unit = { _, _ -> }) {
+        val current = _proxySettings.value.copy(enabled = false)
+        saveProxySettings(current)
+        _proxySettings.value = current
+
+        send(TdApi.DisableProxy()) { result ->
+            activeProxyId = null
+            updateNetworkType()
+            if (result is TdApi.Error) {
+                onResult(false, result.message)
+            } else {
+                onResult(true, null)
+            }
+        }
+    }
+
+    private fun saveProxySettings(settings: ProxySettings) {
+        appContext?.let { ctx ->
+            val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit()
+                .putBoolean(PREF_PROXY_ENABLED, settings.enabled)
+                .putString(PREF_PROXY_SERVER, settings.server)
+                .putInt(PREF_PROXY_PORT, settings.port)
+                .putString(PREF_PROXY_TYPE, settings.type.name)
+                .putString(PREF_PROXY_SECRET, settings.secret)
+                .putString(PREF_PROXY_USERNAME, settings.username)
+                .putString(PREF_PROXY_PASSWORD, settings.password)
+                .apply()
+        }
+    }
+
+    private fun loadSavedProxySettings(): ProxySettings {
+        val ctx = appContext ?: return ProxySettings()
+        val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val enabled = prefs.getBoolean(PREF_PROXY_ENABLED, false)
+        val server = prefs.getString(PREF_PROXY_SERVER, "") ?: ""
+        val port = prefs.getInt(PREF_PROXY_PORT, 443)
+        val typeStr = prefs.getString(PREF_PROXY_TYPE, ProxySettings.ProxyType.MTPROTO.name) ?: ProxySettings.ProxyType.MTPROTO.name
+        val type = try {
+            ProxySettings.ProxyType.valueOf(typeStr)
+        } catch (_: Throwable) {
+            ProxySettings.ProxyType.MTPROTO
+        }
+        val secret = prefs.getString(PREF_PROXY_SECRET, "") ?: ""
+        val username = prefs.getString(PREF_PROXY_USERNAME, "") ?: ""
+        val password = prefs.getString(PREF_PROXY_PASSWORD, "") ?: ""
+
+        return ProxySettings(
+            enabled = enabled,
+            server = server,
+            port = port,
+            type = type,
+            secret = secret,
+            username = username,
+            password = password
+        )
     }
 
     /**

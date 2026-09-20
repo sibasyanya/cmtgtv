@@ -25,10 +25,10 @@ class TelegramMediaTvApp : Application() {
                 filesDirectory = tdlibFilesDir.absolutePath,
                 deviceModel = "Android TV 10-Foot",
                 systemVersion = android.os.Build.VERSION.RELEASE ?: "14",
-                applicationVersion = "1.0.16"
+                applicationVersion = "1.0.17"
             )
 
-            TdLibManager.getInstance().initialize(config)
+            TdLibManager.getInstance().initialize(this, config)
         } catch (t: Throwable) {
             Log.e("TelegramMediaTvApp", "Safe mode fallback: Error during TdLib init", t)
         }
