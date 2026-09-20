@@ -2,6 +2,17 @@
 
 Все важные изменения проекта Telegram Media TV фиксируются в этом файле.
 
+## [1.0.15] - 2026-09-20
+
+### Исправлено (Устранение фатального сбоя JNI FatalError: Can't find static field [GIT_COMMIT_HASH])
+- **Подключение полного официального класса `TdApi.java`:**
+  - Нативная библиотека `libtdjni.so` при старте через `JNI_OnLoad` выполняет проверку подлинности бинарного интерфейса TDLib и запрашивает статический хеш коммита (`GIT_COMMIT_HASH`) из класса `org.drinkless.tdlib.TdApi`.
+  - Усеченная заглушка `TdApi.java` заменена на официальный сгенерированный класс TDLib v1.8.67 (хеш `d1085f9cebc5a62379991ae1652673954f229c1f`), содержащий все структуры данных, сигнатуры методов и валидацию JNI.
+- **Коррекция вызовов API в `TdLibManager.kt`:**
+  - Реализован автоматический переход из состояния `AuthorizationStateWaitPhoneNumber` в вызов `RequestQrCodeAuthentication(longArrayOf())` для моментального получения QR-кода на Android TV.
+  - Актуализированы сигнатуры вызовов `LoadChats(null, limit)`, `GetChats(null, limit)` и `SendMessage`.
+  - Усилены правила ProGuard (`-keepclassmembers`, `-keepnames`, `-keepattributes Signature`) для предотвращения удаления JNI-полей при оптимизации.
+
 ## [1.0.14] - 2026-09-19
 
 ### Исправлено

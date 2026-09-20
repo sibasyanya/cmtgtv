@@ -115,6 +115,10 @@ class TdLibManager private constructor() {
                     is TdApi.AuthorizationStateWaitTdlibParameters -> {
                         sendTdlibParameters()
                     }
+                    is TdApi.AuthorizationStateWaitPhoneNumber -> {
+                        // Для Android TV сразу запрашиваем авторизацию по QR-коду вместо ввода номера с пульта
+                        requestQrCodeAuthentication()
+                    }
                     is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> {
                         // Получен токен для генерации QR-кода на экране ТВ
                         _qrCodeLink.value = newState.link
@@ -172,20 +176,6 @@ class TdLibManager private constructor() {
                 Log.e(TAG, "SetTdlibParameters failed: ${result.message} (code: ${result.code})")
             } else {
                 Log.i(TAG, "SetTdlibParameters accepted by TDLib.")
-                // После установки параметров проверяем ключ базы
-                checkDatabaseKey(currentConfig.encryptionKey)
-            }
-        }
-    }
-
-    private fun checkDatabaseKey(key: ByteArray) {
-        send(TdApi.CheckDatabaseEncryptionKey(key)) { result ->
-            if (result is TdApi.Error) {
-                Log.e(TAG, "CheckDatabaseEncryptionKey error: ${result.message}")
-            } else {
-                Log.d(TAG, "Database encryption key confirmed.")
-                // После подтверждения ключа запрашиваем авторизацию по QR-коду
-                requestQrCodeAuthentication()
             }
         }
     }
@@ -195,7 +185,7 @@ class TdLibManager private constructor() {
      */
     fun requestQrCodeAuthentication() {
         Log.i(TAG, "Requesting QR Code authentication from TDLib...")
-        send(TdApi.RequestQrCodeAuthentication(emptyArray())) { result ->
+        send(TdApi.RequestQrCodeAuthentication(longArrayOf())) { result ->
             if (result is TdApi.Error) {
                 Log.e(TAG, "RequestQrCodeAuthentication error: ${result.message} (code: ${result.code})")
             } else {
@@ -249,11 +239,11 @@ class TdLibManager private constructor() {
             // Демонстрационный список каналов для проверки UI на ТВ пульте
             return Result.success(listOf(1001L, 1002L, 1003L, 1004L, 1005L))
         }
-        val loadResult = execute(TdApi.LoadChats(limit))
+        val loadResult = execute(TdApi.LoadChats(null, limit))
         if (loadResult.isFailure) {
             return Result.failure(loadResult.exceptionOrNull() ?: Exception("Failed to load chats"))
         }
-        val chatsResult = execute(TdApi.GetChats(limit))
+        val chatsResult = execute(TdApi.GetChats(null, limit))
         return chatsResult.map { it.chatIds.toList() }
     }
 
@@ -273,8 +263,11 @@ class TdLibManager private constructor() {
      * Отправка текстового сообщения в чат с Android TV.
      */
     suspend fun sendMessage(chatId: Long, text: String): Result<TdApi.Message> {
-        val content = TdApi.InputMessageText(TdApi.FormattedText(text), false, true)
-        val request = TdApi.SendMessage(chatId, 0, content)
+        val content = TdApi.InputMessageText(TdApi.FormattedText(text, null), null, true)
+        val request = TdApi.SendMessage().apply {
+            this.chatId = chatId
+            this.inputMessageContent = content
+        }
         return execute(request)
     }
 
