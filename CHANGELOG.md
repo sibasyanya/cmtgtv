@@ -1,8 +1,22 @@
 # Changelog
 
-Все важные изменения проекта Telegram Media TV фиксируются в этом файле.
+Все важные изменения проекта Cybermasters TG TV (CMTGTV) фиксируются в этом файле.
 
-## [1.0.19] - 2026-09-21
+## [1.0.20] - 2026-09-21
+
+### Изменено и оптимизировано (Смена наименования на Cybermasters TG TV / CMTGTV и устранение OOM Exit Code 9 в GitHub Actions)
+- **Смена названия приложения:**
+  - Полное наименование изменено на **Cybermasters TG TV**.
+  - Сокращенное наименование — **CMTGTV**.
+  - Названия обновлены во всех манифестах, ресурсах Android (`strings.xml`, `AndroidManifest.xml`), заголовках интерфейса, `package.json`, `metadata.json` и в именах генерируемых APK-файлов (`cmtgtv-vX.Y.Z.apk`).
+- **Устранение сбоя сборки в GitHub Actions (Exit code 9 / OOM Killer):**
+  - Ошибка exit code 9 в Linux вызывается системным OOM Killer при исчерпании лимита оперативной памяти на раннере GitHub Actions из-за параллельных форков Gradle и Kotlin-компилятора при сборке тяжеловесного 5MB Java-класса TDLib `TdApi.java` (140,000 строк).
+  - В `android/gradle.properties` и `.github/workflows/release.yml` настроены безопасные параметры памяти:
+    - `org.gradle.parallel=false`
+    - `org.gradle.workers.max=2` (флаг `--max-workers=2`)
+    - `org.gradle.jvmargs=-Xmx3072m -XX:+UseParallelGC`
+    - `kotlin.daemon.jvmargs=-Xmx1536m -XX:+UseParallelGC`
+  - Добавлены явные зависимости `androidx.compose.material3:material3` и `androidx.compose.material:material-icons-extended` в `build.gradle.kts` для гарантированной компиляции диалогов и компонентов без ошибок типов.
 
 ### Добавлено и изменено (Официальные настройки прокси Telegram, скрейпинг mtproto.ru, вход только по номеру)
 - **Полное удаление авторизации по QR-коду:**

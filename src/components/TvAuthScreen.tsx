@@ -125,7 +125,7 @@ export const TvAuthScreen: React.FC<TvAuthScreenProps> = ({
             </svg>
           </div>
           <div>
-            <div className="text-sm font-bold text-[#f5f5f5]">Telegram Media TV</div>
+            <div className="text-sm font-bold text-[#f5f5f5]">Cybermasters TG TV (CMTGTV)</div>
             <div className="flex items-center gap-1.5 text-xs text-emerald-400">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               <span>Подключено к Telegram</span>

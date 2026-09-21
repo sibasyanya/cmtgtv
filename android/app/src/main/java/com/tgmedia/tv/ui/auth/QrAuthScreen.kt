@@ -291,7 +291,7 @@ private fun TopStatusBar(
 
             Column {
                 Text(
-                    text = "Telegram Media TV",
+                    text = "Cybermasters TG TV (CMTGTV)",
                     color = TgTextWhite,
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp

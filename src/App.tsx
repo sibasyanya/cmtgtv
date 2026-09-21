@@ -537,10 +537,10 @@ class TdLibManager private constructor() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-base font-bold tracking-tight text-white">
-                Telegram Media TV
+                Cybermasters TG TV
               </h1>
               <span className="px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 text-[10px] font-mono font-semibold border border-sky-500/30">
-                v1.0.14
+                CMTGTV v1.0.20
               </span>
             </div>
             <p className="text-xs text-zinc-400">
