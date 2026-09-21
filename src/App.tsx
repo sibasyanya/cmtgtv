@@ -540,7 +540,7 @@ class TdLibManager private constructor() {
                 Cybermasters TG TV
               </h1>
               <span className="px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 text-[10px] font-mono font-semibold border border-sky-500/30">
-                CMTGTV v1.0.20
+                CMTGTV v1.0.21
               </span>
             </div>
             <p className="text-xs text-zinc-400">

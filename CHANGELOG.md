@@ -2,6 +2,16 @@
 
 Все важные изменения проекта Cybermasters TG TV (CMTGTV) фиксируются в этом файле.
 
+## [1.0.21] - 2026-09-21
+
+### Исправлено (Ошибки компиляции Kotlin в GitHub Actions)
+- **Исправление сигнатуры и вызовов метода `send()` в `TdLibManager.kt`:**
+  - Параметр `callback` в методе `send(query, callback)` сделан опциональным со значением по умолчанию `null` (`callback: ((TdApi.Object) -> Unit)? = null`), что предотвращает ошибку Kotlin `Null cannot be a value of a non-null type` и `No value passed for parameter 'callback'`.
+  - Исправлены вызовы `send(TdApi.RemoveProxy(id))` и `send(TdApi.DisableProxy())`.
+  - Устранен вызов `currentClient.send(TdApi.Close(), null)` в `resetSession()`, заменен на `currentClient.send(TdApi.Close()) {}`.
+- **Исправление импорта в `QrAuthScreen.kt`:**
+  - Добавлен отсутствовавший импорт `com.tgmedia.tv.ui.proxy.TgDivider` для разделителей и рамок в интерфейсе авторизации Android TV.
+
 ## [1.0.20] - 2026-09-21
 
 ### Изменено и оптимизировано (Смена наименования на Cybermasters TG TV / CMTGTV и устранение OOM Exit Code 9 в GitHub Actions)

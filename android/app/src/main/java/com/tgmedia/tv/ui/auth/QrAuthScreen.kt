@@ -31,6 +31,7 @@ import com.tgmedia.tv.ui.proxy.TgAccentCyan
 import com.tgmedia.tv.ui.proxy.TgCardBg
 import com.tgmedia.tv.ui.proxy.TgCardHover
 import com.tgmedia.tv.ui.proxy.TgDarkBg
+import com.tgmedia.tv.ui.proxy.TgDivider
 import com.tgmedia.tv.ui.proxy.TgErrorRed
 import com.tgmedia.tv.ui.proxy.TgPrimary
 import com.tgmedia.tv.ui.proxy.TgSuccessGreen

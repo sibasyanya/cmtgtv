@@ -526,7 +526,7 @@ class TdLibManager private constructor() {
         val newProxies = current.proxies.filter { it.id != proxyId }
 
         itemToRemove?.tdlibProxyId?.let { id ->
-            send(TdApi.RemoveProxy(id), null)
+            send(TdApi.RemoveProxy(id))
         }
 
         val newSelectedId = if (current.selectedProxyId == proxyId) {
@@ -553,7 +553,7 @@ class TdLibManager private constructor() {
         val current = _telegramProxyConfig.value
         for (proxy in current.proxies) {
             proxy.tdlibProxyId?.let { id ->
-                send(TdApi.RemoveProxy(id), null)
+                send(TdApi.RemoveProxy(id))
             }
         }
 
@@ -819,7 +819,7 @@ class TdLibManager private constructor() {
             isRestartingSession = true
             pendingClearDatabase = clearDatabase
             try {
-                currentClient.send(TdApi.Close(), null)
+                currentClient.send(TdApi.Close()) {}
             } catch (t: Throwable) {
                 Log.w(TAG, "Error closing client", t)
                 isRestartingSession = false
@@ -873,14 +873,14 @@ class TdLibManager private constructor() {
             }
         }
 
-    fun send(query: TdApi.Function<*>, callback: (TdApi.Object) -> Unit) {
+    fun send(query: TdApi.Function<*>, callback: ((TdApi.Object) -> Unit)? = null) {
         val activeClient = client
         if (activeClient == null) {
-            callback(TdApi.Error(500, "TDLib client not running"))
+            callback?.invoke(TdApi.Error(500, "TDLib client not running"))
             return
         }
         activeClient.send(query) { result ->
-            callback(result)
+            callback?.invoke(result)
         }
     }
 
