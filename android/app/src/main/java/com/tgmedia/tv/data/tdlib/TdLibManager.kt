@@ -602,7 +602,7 @@ class TdLibManager private constructor() {
     }
 
     /**
-     * Загрузка свежих MTProto прокси с сайта https://mtproto.ru/main.php.
+     * Загрузка свежих MTProto прокси с сайта mtproto.ru и резервных зеркал.
      */
     fun loadProxiesFromMtprotoRu(onResult: (Int, String?) -> Unit) {
         scope.launch {
@@ -610,22 +610,27 @@ class TdLibManager private constructor() {
                 val scraped = MtprotoScraper.fetchAndVerifyProxies()
                 if (scraped.isEmpty()) {
                     withContext(Dispatchers.Main) {
-                        onResult(0, "Не удалось найти прокси на mtproto.ru")
+                        onResult(0, "Не удалось получить список прокси. Проверьте соединение с интернетом.")
                     }
                     return@launch
                 }
 
                 val current = _telegramProxyConfig.value
-                val existingHosts = current.proxies.map { "${it.host.lowercase()}:${it.port}" }.toSet()
-                val added = mutableListOf<TelegramProxyItem>()
+                val scrapedMap = scraped.associateBy { "${it.host.lowercase()}:${it.port}" }
 
-                for (p in scraped) {
-                    if (!existingHosts.contains("${p.host.lowercase()}:${p.port}")) {
-                        added.add(p)
-                    }
+                // Обновляем статусы существующих и добавляем новые
+                val updatedExisting = current.proxies.map { existing ->
+                    val key = "${existing.host.lowercase()}:${existing.port}"
+                    val fresh = scrapedMap[key]
+                    if (fresh != null) {
+                        existing.copy(status = fresh.status, pingMs = fresh.pingMs)
+                    } else existing
                 }
 
-                val allProxies = (current.proxies + added).toMutableList()
+                val existingKeys = current.proxies.map { "${it.host.lowercase()}:${it.port}" }.toSet()
+                val added = scraped.filter { !existingKeys.contains("${it.host.lowercase()}:${it.port}") }
+
+                val allProxies = (updatedExisting + added).toMutableList()
                 val activeId = current.selectedProxyId ?: allProxies.firstOrNull { it.status == ProxyStatus.AVAILABLE }?.id
 
                 val updatedConfig = current.copy(
@@ -639,8 +644,14 @@ class TdLibManager private constructor() {
                     setProxyConnectionMode(ProxyConnectionMode.CUSTOM)
                 }
 
+                val availableCount = allProxies.count { it.status == ProxyStatus.AVAILABLE }
                 withContext(Dispatchers.Main) {
-                    onResult(added.size, null)
+                    val statusMessage = if (added.isNotEmpty()) {
+                        "Добавлено ${added.size} новых прокси (рабочих: $availableCount)"
+                    } else {
+                        "Прокси обновлены (доступно рабочих: $availableCount)"
+                    }
+                    onResult(added.size, statusMessage)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error loading proxies from mtproto.ru", e)

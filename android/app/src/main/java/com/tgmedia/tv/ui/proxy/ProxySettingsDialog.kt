@@ -8,9 +8,11 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -522,7 +524,8 @@ fun ProxyEditDialog(
     Dialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
-                .width(520.dp)
+                .width(540.dp)
+                .heightIn(max = 560.dp)
                 .padding(8.dp),
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = TgDarkBg)
@@ -530,122 +533,140 @@ fun ProxyEditDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp)
+                    .padding(18.dp)
             ) {
                 Text(
                     text = if (isEdit) "Редактирование прокси" else "Добавление прокси",
                     color = TgTextWhite,
-                    fontSize = 20.sp,
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-                // Радиокнопки выбора типа: MTPROTO, SOCKS5, HTTP, WEB
-                Column {
-                    TgRadioRow("MTPROTO", selected = selectedType == ProxyItemType.MTPROTO) { selectedType = ProxyItemType.MTPROTO }
-                    TgRadioRow("SOCKS5", selected = selectedType == ProxyItemType.SOCKS5) { selectedType = ProxyItemType.SOCKS5 }
-                    TgRadioRow("HTTP", selected = selectedType == ProxyItemType.HTTP) { selectedType = ProxyItemType.HTTP }
-                    TgRadioRow("WEB", selected = selectedType == ProxyItemType.WEB) { selectedType = ProxyItemType.WEB }
-                }
+                // Скроллируемая форма настроек
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    // Компактный выбор типа прокси чипами в одну строку
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(
+                            ProxyItemType.MTPROTO to "MTPROTO",
+                            ProxyItemType.SOCKS5 to "SOCKS5",
+                            ProxyItemType.HTTP to "HTTP",
+                            ProxyItemType.WEB to "WEB"
+                        ).forEach { (type, label) ->
+                            TvChipButton(
+                                text = label,
+                                isSelected = selectedType == type,
+                                onClick = { selectedType = type }
+                            )
+                        }
+                    }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                // Пояснение для MTPROTO / WEB
-                if (selectedType == ProxyItemType.MTPROTO || selectedType == ProxyItemType.WEB) {
+                    // Пояснение для MTPROTO / WEB
+                    if (selectedType == ProxyItemType.MTPROTO || selectedType == ProxyItemType.WEB) {
+                        Text(
+                            text = "Этот прокси-сервер может показывать канал спонсора в списке Ваших чатов. Это не раскрывает Ваш трафик.",
+                            color = TgTextMuted,
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp,
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+
+                    // Секция «Адрес сокета»
                     Text(
-                        text = "Этот прокси-сервер может показывать канал спонсора в списке Ваших чатов. Это не раскрывает Ваш трафик.",
-                        color = TgTextMuted,
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp,
-                        modifier = Modifier.padding(vertical = 4.dp)
+                        text = "Адрес сокета",
+                        color = TgTextWhite,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
+                    Spacer(modifier = Modifier.height(6.dp))
 
-                // Секция «Адрес сокета»
-                Text(
-                    text = "Адрес сокета",
-                    color = TgTextWhite,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
-                )
-                Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = host,
+                            onValueChange = { host = it },
+                            label = { Text("Хост", color = TgTextSecondary, fontSize = 12.sp) },
+                            modifier = Modifier.weight(0.7f),
+                            colors = tgTextFieldColors(),
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedTextField(
+                            value = portText,
+                            onValueChange = { portText = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("Порт", color = TgTextSecondary, fontSize = 12.sp) },
+                            modifier = Modifier.weight(0.3f),
+                            colors = tgTextFieldColors(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true
+                        )
+                    }
 
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = host,
-                        onValueChange = { host = it },
-                        label = { Text("Хост", color = TgTextSecondary) },
-                        modifier = Modifier.weight(0.7f),
-                        colors = tgTextFieldColors(),
-                        singleLine = true
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    OutlinedTextField(
-                        value = portText,
-                        onValueChange = { portText = it.filter { ch -> ch.isDigit() } },
-                        label = { Text("Порт", color = TgTextSecondary) },
-                        modifier = Modifier.weight(0.3f),
-                        colors = tgTextFieldColors(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true
-                    )
-                }
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Секция «Учётные данные»
-                Text(
-                    text = if (selectedType == ProxyItemType.MTPROTO || selectedType == ProxyItemType.WEB) "Учётные данные" else "Учётные данные (необязательно)",
-                    color = TgTextWhite,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-
-                if (selectedType == ProxyItemType.MTPROTO || selectedType == ProxyItemType.WEB) {
-                    OutlinedTextField(
-                        value = secret,
-                        onValueChange = { secret = it },
-                        label = { Text("Ключ (Secret)", color = TgTextSecondary) },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = tgTextFieldColors(),
-                        singleLine = true
-                    )
-                } else {
-                    OutlinedTextField(
-                        value = username,
-                        onValueChange = { username = it },
-                        label = { Text("Логин", color = TgTextSecondary) },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = tgTextFieldColors(),
-                        singleLine = true
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it },
-                        label = { Text("Пароль", color = TgTextSecondary) },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = tgTextFieldColors(),
-                        singleLine = true
-                    )
-                }
-
-                // Индикатор результата проверки
-                if (checkResultText != null) {
-                    Spacer(modifier = Modifier.height(8.dp))
+                    // Секция «Учётные данные»
                     Text(
-                        text = checkResultText ?: "",
-                        color = if (checkResultText?.contains("Доступен") == true) TgSuccessGreen else TgErrorRed,
-                        fontSize = 13.sp
+                        text = if (selectedType == ProxyItemType.MTPROTO || selectedType == ProxyItemType.WEB) "Учётные данные" else "Учётные данные (необязательно)",
+                        color = TgTextWhite,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
                     )
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    if (selectedType == ProxyItemType.MTPROTO || selectedType == ProxyItemType.WEB) {
+                        OutlinedTextField(
+                            value = secret,
+                            onValueChange = { secret = it },
+                            label = { Text("Ключ (Secret)", color = TgTextSecondary, fontSize = 12.sp) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = tgTextFieldColors(),
+                            singleLine = true
+                        )
+                    } else {
+                        OutlinedTextField(
+                            value = username,
+                            onValueChange = { username = it },
+                            label = { Text("Логин", color = TgTextSecondary, fontSize = 12.sp) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = tgTextFieldColors(),
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            label = { Text("Пароль", color = TgTextSecondary, fontSize = 12.sp) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = tgTextFieldColors(),
+                            singleLine = true
+                        )
+                    }
+
+                    // Индикатор результата проверки
+                    if (checkResultText != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = checkResultText ?: "",
+                            color = if (checkResultText?.contains("Доступен") == true) TgSuccessGreen else TgErrorRed,
+                            fontSize = 12.sp
+                        )
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                // Кнопки «Отмена», «Проверить», «Сохранить»
+                // Фиксированный нижний ряд кнопок: всегда на экране ТВ
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,

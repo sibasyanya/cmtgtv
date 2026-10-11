@@ -84,6 +84,7 @@ fun QrAuthScreen(
             // 1. Верхняя панель: Название, сетевой статус и кнопки управления
             TopStatusBar(
                 connState = connState,
+                authState = authState,
                 proxyConfig = proxyConfig,
                 onOpenProxySettings = { showProxyDialog = true },
                 onResetDatabase = { showResetConfirm = true }
@@ -263,6 +264,7 @@ fun QrAuthScreen(
 @Composable
 private fun TopStatusBar(
     connState: TdApi.ConnectionState?,
+    authState: TdApi.AuthorizationState?,
     proxyConfig: TelegramProxyConfig,
     onOpenProxySettings: () -> Unit,
     onResetDatabase: () -> Unit
@@ -298,11 +300,16 @@ private fun TopStatusBar(
                     fontSize = 16.sp
                 )
 
-                val (statusColor, statusText) = when (connState) {
-                    is TdApi.ConnectionStateReady -> Pair(TgSuccessGreen, "Подключено к Telegram")
-                    is TdApi.ConnectionStateConnecting -> Pair(Color(0xFFFFB74D), "Подключение к Telegram...")
-                    is TdApi.ConnectionStateUpdating -> Pair(TgAccentCyan, "Обновление данных...")
-                    is TdApi.ConnectionStateWaitingForNetwork -> Pair(TgErrorRed, "Ожидание сети (включите Proxy)")
+                val (statusColor, statusText) = when {
+                    connState is TdApi.ConnectionStateReady -> Pair(TgSuccessGreen, "Подключено к Telegram")
+                    connState is TdApi.ConnectionStateUpdating -> Pair(TgAccentCyan, "Обновление данных...")
+                    connState is TdApi.ConnectionStateConnectingToProxy -> Pair(Color(0xFFFFB74D), "Подключение к MTProto Proxy...")
+                    connState is TdApi.ConnectionStateConnecting -> Pair(Color(0xFFFFB74D), "Подключение к Telegram...")
+                    connState is TdApi.ConnectionStateWaitingForNetwork -> Pair(TgErrorRed, "Ожидание сети (включите Proxy)")
+                    proxyConfig.mode == ProxyConnectionMode.CUSTOM -> Pair(Color(0xFFFFB74D), "Подключение через прокси...")
+                    authState is TdApi.AuthorizationStateWaitPhoneNumber -> Pair(TgAccentCyan, "TDLib готов к авторизации")
+                    authState is TdApi.AuthorizationStateWaitCode -> Pair(TgAccentCyan, "Ожидание кода из Telegram")
+                    authState is TdApi.AuthorizationStateWaitPassword -> Pair(TgAccentCyan, "Ожидание 2FA пароля")
                     else -> Pair(TgTextMuted, "Инициализация TDLib...")
                 }
 
@@ -348,7 +355,7 @@ private fun TopStatusBar(
 }
 
 // ============================================================================
-// СТАДИЯ 1: Ввод номера телефона
+// СТАДИЯ 1: Ввод номера телефона (Двухколоночный ТВ-вид)
 // ============================================================================
 
 @Composable
@@ -361,131 +368,149 @@ private fun PhoneNumberStageView(
 ) {
     Card(
         modifier = Modifier
-            .width(680.dp)
+            .width(820.dp)
             .padding(8.dp),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = TgCardBg)
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            horizontalArrangement = Arrangement.spacedBy(24.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "Вход по номеру телефона",
-                color = TgTextWhite,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Text(
-                text = "Введите номер телефона вашего аккаунта Telegram",
-                color = TgTextSecondary,
-                fontSize = 14.sp
-            )
-
-            Spacer(modifier = Modifier.height(18.dp))
-
-            // Быстрые пресеты кодов стран
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
+            // ЛЕВАЯ КОЛОНКА: Ввод номера и кнопка «Получить код»
+            Column(
+                modifier = Modifier.weight(1.1f),
+                verticalArrangement = Arrangement.Center
             ) {
-                val presets = listOf("+7", "+375", "+380", "+998", "+1")
-                presets.forEach { code ->
-                    Box(
-                        modifier = Modifier
-                            .padding(horizontal = 4.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (phoneNumber.startsWith(code)) TgPrimary else TgSurface)
-                            .clickable {
-                                onPhoneChange(code)
-                            }
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
+                Text(
+                    text = "Вход по номеру телефона",
+                    color = TgTextWhite,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = "Введите номер вашего аккаунта Telegram в международном формате",
+                    color = TgTextSecondary,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Быстрые пресеты кодов стран
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val presets = listOf("+7", "+375", "+380", "+998", "+1")
+                    presets.forEach { code ->
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (phoneNumber.startsWith(code)) TgPrimary else TgSurface)
+                                .clickable { onPhoneChange(code) }
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            Text(
+                                text = code,
+                                color = if (phoneNumber.startsWith(code)) Color.White else TgTextSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Поле ввода номера
+                OutlinedTextField(
+                    value = phoneNumber,
+                    onValueChange = { onPhoneChange(it) },
+                    label = { Text("Номер телефона (+...)", color = TgTextSecondary, fontSize = 12.sp) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TgTextWhite,
+                        unfocusedTextColor = TgTextWhite,
+                        focusedContainerColor = TgSurface,
+                        unfocusedContainerColor = TgSurface,
+                        focusedBorderColor = TgAccentCyan,
+                        unfocusedBorderColor = Color.Transparent
+                    ),
+                    textStyle = LocalTextStyle.current.copy(
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Start
+                    ),
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // КНОПКА АВТОРИЗАЦИИ (ВСЕГДА ВИДНА СЛЕВА ПОД ПОЛЕМ ВВОДА)
+                Button(
+                    onClick = onSubmit,
+                    enabled = !isSubmitting,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = TgPrimary)
+                ) {
+                    if (isSubmitting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Отправка запроса...", color = Color.White, fontSize = 14.sp)
+                    } else {
+                        Icon(Icons.Default.ArrowForward, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = code,
-                            color = if (phoneNumber.startsWith(code)) Color.White else TgTextSecondary,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
+                            "Получить код / Войти",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Поле ввода номера
-            OutlinedTextField(
-                value = phoneNumber,
-                onValueChange = { onPhoneChange(it) },
-                label = { Text("Номер телефона (+...)", color = TgTextSecondary) },
-                modifier = Modifier
-                    .fillMaxWidth(0.85f),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = TgTextWhite,
-                    unfocusedTextColor = TgTextWhite,
-                    focusedContainerColor = TgSurface,
-                    unfocusedContainerColor = TgSurface,
-                    focusedBorderColor = TgAccentCyan,
-                    unfocusedBorderColor = Color.Transparent
-                ),
-                textStyle = LocalTextStyle.current.copy(
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
-                ),
-                singleLine = true
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Экранная цифровая клавиатура для пульта ТВ
-            TvNumericKeypad(
-                onDigit = { d -> onPhoneChange(phoneNumber + d) },
-                onBackspace = {
-                    if (phoneNumber.isNotEmpty()) {
-                        onPhoneChange(phoneNumber.dropLast(1))
-                    }
-                },
-                onClear = { onPhoneChange("+") }
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Большая кнопка «Отправить код»
-            Button(
-                onClick = onSubmit,
-                enabled = !isSubmitting,
-                modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .height(48.dp),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = TgPrimary)
+            // ПРАВАЯ КОЛОНКА: Экранный пульт клавиатуры
+            Column(
+                modifier = Modifier.weight(0.9f),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                if (isSubmitting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text("Отправка запроса в Telegram...", color = Color.White, fontSize = 15.sp)
-                } else {
-                    Icon(Icons.Default.ArrowForward, contentDescription = null, tint = Color.White)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Получить код подтверждения", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                }
+                Text(
+                    text = "Цифровой пульт",
+                    color = TgTextSecondary,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+
+                TvNumericKeypad(
+                    onDigit = { d -> onPhoneChange(phoneNumber + d) },
+                    onBackspace = {
+                        if (phoneNumber.isNotEmpty()) {
+                            onPhoneChange(phoneNumber.dropLast(1))
+                        }
+                    },
+                    onClear = { onPhoneChange("+") }
+                )
             }
         }
     }
 }
 
 // ============================================================================
-// СТАДИЯ 2: Ввод кода подтверждения
+// СТАДИЯ 2: Ввод кода подтверждения (Двухколоночный ТВ-вид)
 // ============================================================================
 
 @Composable
@@ -500,113 +525,130 @@ private fun AuthCodeStageView(
 ) {
     Card(
         modifier = Modifier
-            .width(680.dp)
+            .width(820.dp)
             .padding(8.dp),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = TgCardBg)
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            horizontalArrangement = Arrangement.spacedBy(24.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "Введите код подтверждения",
-                color = TgTextWhite,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Text(
-                text = "Код отправлен в ваше приложение Telegram (или по SMS) на $phoneNumber",
-                color = TgTextSecondary,
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(18.dp))
-
-            // Визуальные ячейки 5 цифр
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // ЛЕВАЯ КОЛОНКА: Ячейки кода, подтверждение и действия
+            Column(
+                modifier = Modifier.weight(1.1f),
+                verticalArrangement = Arrangement.Center
             ) {
-                for (i in 0 until 5) {
-                    val char = code.getOrNull(i)?.toString() ?: ""
-                    Box(
-                        modifier = Modifier
-                            .size(52.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(TgSurface)
-                            .border(
-                                width = if (i == code.length) 2.dp else 1.dp,
-                                color = if (i == code.length) TgAccentCyan else Color.Transparent,
-                                shape = RoundedCornerShape(8.dp)
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = char,
-                            color = TgTextWhite,
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                Text(
+                    text = "Введите код подтверждения",
+                    color = TgTextWhite,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = "Код отправлен в Telegram или SMS на $phoneNumber",
+                    color = TgTextSecondary,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Визуальные ячейки 5 цифр
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    for (i in 0 until 5) {
+                        val char = code.getOrNull(i)?.toString() ?: ""
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(TgSurface)
+                                .border(
+                                    width = if (i == code.length) 2.dp else 1.dp,
+                                    color = if (i == code.length) TgAccentCyan else Color.Transparent,
+                                    shape = RoundedCornerShape(8.dp)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = char,
+                                color = TgTextWhite,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Кнопка подтверждения входа
+                Button(
+                    onClick = onSubmit,
+                    enabled = !isSubmitting && code.length >= 5,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = TgPrimary)
+                ) {
+                    if (isSubmitting) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Проверка кода...", color = Color.White, fontSize = 14.sp)
+                    } else {
+                        Icon(Icons.Default.Check, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Войти в Telegram", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Действия возврата и повторной отправки
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    TextButton(onClick = onBackToPhone, contentPadding = PaddingValues(0.dp)) {
+                        Text("Изменить номер", color = TgAccentCyan, fontSize = 12.sp)
+                    }
+                    TextButton(onClick = onResendCode, contentPadding = PaddingValues(0.dp)) {
+                        Text("Отправить повторно", color = TgAccentCyan, fontSize = 12.sp)
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Экранный нумпад для пульта ТВ
-            TvNumericKeypad(
-                onDigit = { d ->
-                    if (code.length < 5) onCodeChange(code + d)
-                },
-                onBackspace = {
-                    if (code.isNotEmpty()) onCodeChange(code.dropLast(1))
-                },
-                onClear = { onCodeChange("") }
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Кнопка подтверждения входа
-            Button(
-                onClick = onSubmit,
-                enabled = !isSubmitting && code.length >= 5,
-                modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .height(48.dp),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = TgPrimary)
+            // ПРАВАЯ КОЛОНКА: Экранный пульт
+            Column(
+                modifier = Modifier.weight(0.9f),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                if (isSubmitting) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Проверка кода...", color = Color.White)
-                } else {
-                    Icon(Icons.Default.Check, contentDescription = null, tint = Color.White)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Войти в Telegram", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                }
-            }
+                Text(
+                    text = "Цифровой пульт",
+                    color = TgTextSecondary,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Кнопки возврата и повторной отправки
-            Row(
-                modifier = Modifier.fillMaxWidth(0.85f),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                TextButton(onClick = onBackToPhone) {
-                    Text("Изменить номер", color = TgAccentCyan, fontSize = 13.sp)
-                }
-                TextButton(onClick = onResendCode) {
-                    Text("Отправить код повторно", color = TgAccentCyan, fontSize = 13.sp)
-                }
+                TvNumericKeypad(
+                    onDigit = { d ->
+                        if (code.length < 5) onCodeChange(code + d)
+                    },
+                    onBackspace = {
+                        if (code.isNotEmpty()) onCodeChange(code.dropLast(1))
+                    },
+                    onClear = { onCodeChange("") }
+                )
             }
         }
     }
