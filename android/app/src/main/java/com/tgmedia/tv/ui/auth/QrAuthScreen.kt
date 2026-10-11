@@ -302,15 +302,17 @@ private fun TopStatusBar(
 
                 val (statusColor, statusText) = when {
                     connState is TdApi.ConnectionStateReady -> Pair(TgSuccessGreen, "Подключено к Telegram")
-                    connState is TdApi.ConnectionStateUpdating -> Pair(TgAccentCyan, "Обновление данных...")
+                    connState is TdApi.ConnectionStateUpdating -> Pair(TgAccentCyan, "Обновление данных Telegram...")
                     connState is TdApi.ConnectionStateConnectingToProxy -> Pair(Color(0xFFFFB74D), "Подключение к MTProto Proxy...")
-                    connState is TdApi.ConnectionStateConnecting -> Pair(Color(0xFFFFB74D), "Подключение к Telegram...")
-                    connState is TdApi.ConnectionStateWaitingForNetwork -> Pair(TgErrorRed, "Ожидание сети (включите Proxy)")
+                    connState is TdApi.ConnectionStateConnecting -> Pair(Color(0xFFFFB74D), "Подключение к серверам Telegram...")
+                    connState is TdApi.ConnectionStateWaitingForNetwork -> Pair(TgErrorRed, "Ожидание сети (проверьте подключение/прокси)")
+                    proxyConfig.mode == ProxyConnectionMode.CUSTOM && proxyConfig.activeProxy?.status == ProxyStatus.CONNECTED ->
+                        Pair(TgSuccessGreen, "Прокси активен (${proxyConfig.activeProxy?.displayAddress}) • Готов к входу")
                     proxyConfig.mode == ProxyConnectionMode.CUSTOM -> Pair(Color(0xFFFFB74D), "Подключение через прокси...")
-                    authState is TdApi.AuthorizationStateWaitPhoneNumber -> Pair(TgAccentCyan, "TDLib готов к авторизации")
-                    authState is TdApi.AuthorizationStateWaitCode -> Pair(TgAccentCyan, "Ожидание кода из Telegram")
-                    authState is TdApi.AuthorizationStateWaitPassword -> Pair(TgAccentCyan, "Ожидание 2FA пароля")
-                    else -> Pair(TgTextMuted, "Инициализация TDLib...")
+                    authState is TdApi.AuthorizationStateWaitPhoneNumber -> Pair(TgAccentCyan, "Готов к входу • Введите номер")
+                    authState is TdApi.AuthorizationStateWaitCode -> Pair(TgAccentCyan, "Код отправлен • Введите код")
+                    authState is TdApi.AuthorizationStateWaitPassword -> Pair(TgAccentCyan, "Требуется пароль 2FA")
+                    else -> Pair(TgAccentCyan, "TDLib готов к работе")
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
