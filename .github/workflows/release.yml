@@ -53,27 +53,27 @@ jobs:
           mkdir -p android/app/src/main/jniLibs/x86
           mkdir -p android/app/src/main/jniLibs/x86_64
 
-          # Загружаем проверенный релиз FaiBah-Dev TDLibAndroidPrebuilt (v1.8.67-d1085f9-Java)
+          # Загружаем проверенный релиз FaiBah TDLibAndroidPrebuilt (v1.8.67-d1085f9-Java)
           # содержащий точные нативные библиотеки libtdjni.so с JNI точками входа org.drinkless.tdlib.Client
-          BASE_URL="https://github.com/FaiBah-Dev/TDLibAndroidPrebuilt/releases/download/v1.8.67-d1085f9-Java"
+          BASE_URL="https://github.com/FaiBah/TDLibAndroidPrebuilt/releases/download/v1.8.67-d1085f9-Java"
           
           echo "Downloading armeabi-v7a..."
-          curl -sL --retry 3 "${BASE_URL}/tdlib-Java-armeabi-v7a.zip" -o /tmp/td_armv7.zip
+          curl -sLf --retry 3 "${BASE_URL}/tdlib-Java-armeabi-v7a.zip" -o /tmp/td_armv7.zip
           unzip -q -o /tmp/td_armv7.zip -d /tmp/td_armv7
           cp /tmp/td_armv7/libs/armeabi-v7a/libtdjni.so android/app/src/main/jniLibs/armeabi-v7a/
 
           echo "Downloading arm64-v8a..."
-          curl -sL --retry 3 "${BASE_URL}/tdlib-Java-arm64-v8a.zip" -o /tmp/td_arm64.zip
+          curl -sLf --retry 3 "${BASE_URL}/tdlib-Java-arm64-v8a.zip" -o /tmp/td_arm64.zip
           unzip -q -o /tmp/td_arm64.zip -d /tmp/td_arm64
           cp /tmp/td_arm64/libs/arm64-v8a/libtdjni.so android/app/src/main/jniLibs/arm64-v8a/
 
           echo "Downloading x86..."
-          curl -sL --retry 3 "${BASE_URL}/tdlib-Java-x86.zip" -o /tmp/td_x86.zip
+          curl -sLf --retry 3 "${BASE_URL}/tdlib-Java-x86.zip" -o /tmp/td_x86.zip
           unzip -q -o /tmp/td_x86.zip -d /tmp/td_x86
           cp /tmp/td_x86/libs/x86/libtdjni.so android/app/src/main/jniLibs/x86/
 
           echo "Downloading x86_64..."
-          curl -sL --retry 3 "${BASE_URL}/tdlib-Java-x86_64.zip" -o /tmp/td_x86_64.zip
+          curl -sLf --retry 3 "${BASE_URL}/tdlib-Java-x86_64.zip" -o /tmp/td_x86_64.zip
           unzip -q -o /tmp/td_x86_64.zip -d /tmp/td_x86_64
           cp /tmp/td_x86_64/libs/x86_64/libtdjni.so android/app/src/main/jniLibs/x86_64/
 
@@ -85,9 +85,13 @@ jobs:
           GRADLE_OPTS: "-Xmx3072m -XX:+UseParallelGC -Dorg.gradle.workers.max=2 -Dkotlin.daemon.jvmargs=-Xmx1536m"
         run: |
           cd android
-          gradle wrapper --gradle-version 8.10.2
-          chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace --info --max-workers=2
+          gradle wrapper --gradle-version 8.10.2 || true
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew assembleRelease --stacktrace --info --max-workers=2
+          else
+            gradle assembleRelease --stacktrace --info --max-workers=2
+          fi
 
       - name: Upload Gradle Reports and Logs on Failure
         if: failure()
