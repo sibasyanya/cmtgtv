@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,6 +20,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.drinkless.tdlib.Client
 import org.drinkless.tdlib.TdApi
 import java.io.File
@@ -671,15 +673,18 @@ class TdLibManager private constructor() {
                         updateProxyStatus(proxyId, status, tdMs)
                         onResult(true, tdMs, null)
                     } else {
-                        // Fallback socket check
+                        // Если TDLib PingProxy вернул ошибку, проверяем сокет для диагностики
                         scope.launch {
-                            val checkResult = MtprotoScraper.verifyProxySocket(item.host, item.port, timeoutMs = 3000)
-                            val isSuccess = checkResult.first
-                            val latency = if (isSuccess) checkResult.second else null
-                            val newStatus = if (isSuccess) ProxyStatus.AVAILABLE else ProxyStatus.UNAVAILABLE
-                            updateProxyStatus(proxyId, newStatus, latency)
+                            val socketCheck = MtprotoScraper.verifyProxySocket(item.host, item.port, timeoutMs = 3000)
+                            val isSocketOpen = socketCheck.first
+                            updateProxyStatus(proxyId, ProxyStatus.UNAVAILABLE, null)
                             withContext(Dispatchers.Main) {
-                                onResult(isSuccess, latency, if (isSuccess) null else (tdErr ?: "Таймаут соединения"))
+                                val diagMsg = if (isSocketOpen) {
+                                    "TCP-порт открыт, но Telegram сервер не ответил через данный прокси (${tdErr ?: "сбой рукопожатия / ключ заблокирован"})"
+                                } else {
+                                    "Прокси-сервер недоступен (таймаут TCP порта)"
+                                }
+                                onResult(false, null, diagMsg)
                             }
                         }
                     }
@@ -737,6 +742,7 @@ class TdLibManager private constructor() {
                 val added = scraped.filter { !existingKeys.contains("${it.host.lowercase()}:${it.port}") }
 
                 val allProxies = (updatedExisting + added).toMutableList()
+                // Сохраняем выбор пользователя: если уже был выбран прокси (например, Socks5), не переключаем принудительно на MTProto
                 val activeId = current.selectedProxyId ?: allProxies.firstOrNull { it.status == ProxyStatus.AVAILABLE }?.id
 
                 val updatedConfig = current.copy(
@@ -745,9 +751,9 @@ class TdLibManager private constructor() {
                 )
                 updateAndSaveProxyConfig(updatedConfig)
 
-                // Если прокси не были включены, но найден рабочий прокси, переключаем на него
-                if (updatedConfig.mode != ProxyConnectionMode.CUSTOM && activeId != null) {
-                    setProxyConnectionMode(ProxyConnectionMode.CUSTOM)
+                // Если пользователь находился в режиме CUSTOM с активным прокси, применяем обновление
+                if (updatedConfig.mode == ProxyConnectionMode.CUSTOM) {
+                    applyCurrentProxyConfigToTdLib()
                 }
 
                 val availableCount = allProxies.count { it.status == ProxyStatus.AVAILABLE }
@@ -815,25 +821,38 @@ class TdLibManager private constructor() {
                 val activeProxy = config.activeProxy
                 if (activeProxy == null || !activeProxy.isValid) {
                     Log.w(TAG, "No valid active proxy selected for CUSTOM mode.")
-                    send(TdApi.DisableProxy())
+                    send(TdApi.DisableProxy()) {
+                        activeTdlibProxyId = null
+                        updateNetworkType()
+                    }
                     return
                 }
 
                 Log.i(TAG, "Enabling custom proxy in TDLib: ${activeProxy.type} ${activeProxy.displayAddress}")
                 val tdProxy = activeProxy.toTdProxy()
 
-                send(TdApi.AddProxy(tdProxy, true, "TV Custom Proxy")) { result ->
-                    if (result is TdApi.AddedProxy) {
-                        Log.i(TAG, "Proxy added & enabled in TDLib. TDLib ID: ${result.id}")
-                        activeTdlibProxyId = result.id
-                        send(TdApi.EnableProxy(result.id)) { enableRes ->
-                            Log.i(TAG, "EnableProxy ID ${result.id} result: $enableRes")
+                // Очищаем предыдущие прокси в TDLib перед добавлением нового, чтобы избежать конфликтов шлюзов
+                send(TdApi.GetProxies()) { proxiesRes ->
+                    if (proxiesRes is TdApi.AddedProxies) {
+                        for (p in proxiesRes.proxies) {
+                            send(TdApi.RemoveProxy(p.id))
                         }
-                        updateProxyStatus(activeProxy.id, ProxyStatus.CONNECTED, activeProxy.pingMs)
-                        updateNetworkType()
-                    } else if (result is TdApi.Error) {
-                        Log.e(TAG, "Failed to apply proxy in TDLib: ${result.message} (${result.code})")
-                        updateProxyStatus(activeProxy.id, ProxyStatus.UNAVAILABLE, null)
+                    }
+
+                    // Добавляем и немедленно активируем выбранный пользователем прокси (Socks5/MTProto/Http)
+                    send(TdApi.AddProxy(tdProxy, true, "TV ${activeProxy.type} Proxy")) { result ->
+                        if (result is TdApi.AddedProxy) {
+                            Log.i(TAG, "Proxy added & enabled in TDLib. TDLib ID: ${result.id}")
+                            activeTdlibProxyId = result.id
+                            send(TdApi.EnableProxy(result.id)) { enableRes ->
+                                Log.i(TAG, "EnableProxy ID ${result.id} result: $enableRes")
+                            }
+                            updateProxyStatus(activeProxy.id, ProxyStatus.CONNECTED, activeProxy.pingMs)
+                            updateNetworkType()
+                        } else if (result is TdApi.Error) {
+                            Log.e(TAG, "Failed to apply proxy in TDLib: ${result.message} (${result.code})")
+                            updateProxyStatus(activeProxy.id, ProxyStatus.UNAVAILABLE, null)
+                        }
                     }
                 }
             }
@@ -880,16 +899,21 @@ class TdLibManager private constructor() {
         val config = _telegramProxyConfig.value
         val currentIndex = config.proxies.indexOfFirst { it.id == config.selectedProxyId }
         val proxies = config.proxies
-        if (proxies.isEmpty()) return
+        if (proxies.size <= 1) return
 
         for (i in 1 until proxies.size) {
             val candidateIndex = (currentIndex + i) % proxies.size
             val candidate = proxies[candidateIndex]
 
-            // Проверяем кандидата
-            val ping = MtprotoScraper.verifyProxySocket(candidate.host, candidate.port, timeoutMs = 1500)
-            if (ping.first) {
-                Log.i(TAG, "AutoSwitch found alive proxy: ${candidate.displayAddress} (ping ${ping.second} ms)")
+            // Проверяем доступность кандидата через TDLib
+            val tdPingDeferred = CompletableDeferred<Boolean>()
+            pingProxyWithTdLib(candidate) { ok, _, _ ->
+                tdPingDeferred.complete(ok)
+            }
+            val responds = withTimeoutOrNull(2500) { tdPingDeferred.await() } ?: false
+
+            if (responds) {
+                Log.i(TAG, "AutoSwitch found alive proxy with Telegram response: ${candidate.displayAddress}")
                 withContext(Dispatchers.Main) {
                     selectProxy(candidate.id)
                 }

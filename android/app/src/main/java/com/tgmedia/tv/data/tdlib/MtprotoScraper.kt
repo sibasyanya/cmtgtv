@@ -299,9 +299,25 @@ object MtprotoScraper {
             if (item != null) return item
         }
 
-        // 3. Формат host:port:secret
+        // 3. Формат host:port:user:pass (Socks5) или host:port:secret (MTProto)
         val colonParts = trimmed.split(":")
-        if (colonParts.size >= 3) {
+        if (colonParts.size == 4) {
+            val host = colonParts[0].trim()
+            val port = colonParts[1].toIntOrNull()
+            val user = colonParts[2].trim()
+            val pass = colonParts[3].trim()
+            if (port != null && host.isNotBlank()) {
+                return TelegramProxyItem(
+                    id = UUID.randomUUID().toString(),
+                    type = ProxyItemType.SOCKS5,
+                    host = host,
+                    port = port,
+                    username = user,
+                    password = pass,
+                    status = ProxyStatus.CHECKING
+                )
+            }
+        } else if (colonParts.size == 3) {
             val host = colonParts[0].trim()
             val port = colonParts[1].toIntOrNull()
             val secret = colonParts[2].trim()
@@ -311,7 +327,7 @@ object MtprotoScraper {
                     type = ProxyItemType.MTPROTO,
                     host = host,
                     port = port,
-                    secret = secret,
+                    secret = normalizeMtprotoSecret(secret),
                     status = ProxyStatus.CHECKING
                 )
             }

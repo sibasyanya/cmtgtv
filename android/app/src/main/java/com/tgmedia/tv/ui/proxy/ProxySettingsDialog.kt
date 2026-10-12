@@ -680,15 +680,30 @@ fun ProxyEditDialog(
                                 checkResultText = "Введите хост"
                                 return@TextButton
                             }
+                            val checkItem = TelegramProxyItem(
+                                type = selectedType,
+                                host = host.trim(),
+                                port = port,
+                                secret = if (selectedType == ProxyItemType.MTPROTO || selectedType == ProxyItemType.WEB) normalizeMtprotoSecret(secret) else secret.trim(),
+                                username = username.trim(),
+                                password = password.trim()
+                            )
                             isCheckingLive = true
-                            checkResultText = "Проверка соединения..."
-                            coroutineScope.launch {
-                                val pingRes = MtprotoScraper.verifyProxySocket(host.trim(), port)
+                            checkResultText = "Проверка отклика Telegram через ${selectedType.name}..."
+                            tdLibManager.pingProxyWithTdLib(checkItem) { ok, ms, err ->
                                 isCheckingLive = false
-                                checkResultText = if (pingRes.first) {
-                                    "Доступен! Пинг: ${pingRes.second} мс"
+                                checkResultText = if (ok && ms != null) {
+                                    "Отклик Telegram получен! Пинг: ${ms} мс"
                                 } else {
-                                    "Недоступен (таймаут соединения)"
+                                    coroutineScope.launch {
+                                        val sockRes = MtprotoScraper.verifyProxySocket(checkItem.host, checkItem.port)
+                                        checkResultText = if (sockRes.first) {
+                                            "Порт доступен (${sockRes.second} мс), но Telegram не ответил (${err ?: "неверный ключ/блокировка"})"
+                                        } else {
+                                            "Сервер недоступен (таймаут TCP порта)"
+                                        }
+                                    }
+                                    checkResultText
                                 }
                             }
                         },
@@ -716,6 +731,7 @@ fun ProxyEditDialog(
                                     id = initialItem?.id ?: java.util.UUID.randomUUID().toString(),
                                     type = selectedType,
                                     host = host.trim(),
+                                    port = port,
                                     secret = if (selectedType == ProxyItemType.MTPROTO || selectedType == ProxyItemType.WEB) normalizeMtprotoSecret(secret) else secret.trim(),
                                     username = username.trim(),
                                     password = password.trim()

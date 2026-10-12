@@ -14,15 +14,17 @@ fun normalizeMtprotoSecret(rawSecret: String): String {
     val clean = rawSecret.trim().removePrefix("secret=").trim()
     if (clean.isEmpty()) return clean
 
-    // Если уже валидный HEX (четное число символов >= 32, только 0-9, a-f, A-F)
-    val isHex = clean.length >= 32 && clean.all { c ->
+    // 1. Проверяем, является ли строка чистым HEX
+    // Стандартные секреты MTProto в hex: 32 символа (MD5/AES), 34 символа (префикс dd для randomization),
+    // или >= 34 символов (префикс ee для FakeTLS + SNI домен в hex).
+    val isHexOnly = clean.all { c ->
         (c in '0'..'9') || (c in 'a'..'f') || (c in 'A'..'F')
     }
-    if (isHex && clean.length % 2 == 0) {
+    if (isHexOnly && clean.length % 2 == 0 && clean.length >= 32) {
         return clean.lowercase()
     }
 
-    // Если это Base64 или Base64URL (часто встречается в ссылках tg://proxy)
+    // 2. Если это Base64 или Base64URL (часто встречается в ссылках tg://proxy, напр. 7gAAAAAAAAAAAAAAAAAAAAB3d3cuZ29vZ2xlLmNvbQ)
     try {
         val sanitizedB64 = clean.replace('-', '+').replace('_', '/')
         val padLength = (4 - (sanitizedB64.length % 4)) % 4
@@ -33,7 +35,11 @@ fun normalizeMtprotoSecret(rawSecret: String): String {
             for (b in decodedBytes) {
                 sb.append(String.format("%02x", b.toInt() and 0xFF))
             }
-            return sb.toString()
+            val hexCandidate = sb.toString()
+            // Проверяем, что декодированный результат имеет валидный формат MTProto
+            if (hexCandidate.length >= 32) {
+                return hexCandidate.lowercase()
+            }
         }
     } catch (_: Exception) {
     }

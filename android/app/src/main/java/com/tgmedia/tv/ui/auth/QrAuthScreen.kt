@@ -92,8 +92,9 @@ fun QrAuthScreen(
                 delay(1000)
                 countdownSeconds--
             }
+            val proxyTypeTitle = proxyConfig.activeProxy?.let { "${it.type} (${it.displayAddress})" } ?: "прокси"
             val connName = when (connState) {
-                is TdApi.ConnectionStateConnectingToProxy -> "Подключение к MTProto Proxy (сервер не отвечает)"
+                is TdApi.ConnectionStateConnectingToProxy -> "Подключение к $proxyTypeTitle (шлюз не отвечает)"
                 is TdApi.ConnectionStateConnecting -> "Подключение к серверам Telegram"
                 is TdApi.ConnectionStateWaitingForNetwork -> "Ожидание сети (проверьте интернет на ТВ)"
                 is TdApi.ConnectionStateUpdating -> "Обновление данных Telegram"
@@ -101,7 +102,7 @@ fun QrAuthScreen(
                 null -> "Инициализация TDLib"
                 else -> "Состояние сети TDLib (${connState?.javaClass?.simpleName})"
             }
-            val diag = "Превышено время ожидания ответа Telegram (60 сек).\nСтатус сети: $connName.\nРекомендация: переключитесь на рабочий Socks5 прокси или смените сервер в настройках."
+            val diag = "Превышено время ожидания ответа Telegram (60 сек).\nСтатус сети: $connName.\nРекомендация: проверьте параметры $proxyTypeTitle или смените сервер в настройках прокси."
             cancelActiveSubmission(diag)
         }
         action()
@@ -360,15 +361,16 @@ private fun TopStatusBar(
                     fontSize = 16.sp
                 )
 
+                val activeProxyDesc = proxyConfig.activeProxy?.let { "${it.type} (${it.displayAddress})" } ?: "прокси"
                 val (statusColor, statusText) = when {
                     connState is TdApi.ConnectionStateReady -> Pair(TgSuccessGreen, "Подключено к Telegram")
                     connState is TdApi.ConnectionStateUpdating -> Pair(TgAccentCyan, "Обновление данных Telegram...")
-                    connState is TdApi.ConnectionStateConnectingToProxy -> Pair(Color(0xFFFFB74D), "Подключение к MTProto Proxy...")
+                    connState is TdApi.ConnectionStateConnectingToProxy -> Pair(Color(0xFFFFB74D), "Подключение к $activeProxyDesc...")
                     connState is TdApi.ConnectionStateConnecting -> Pair(Color(0xFFFFB74D), "Подключение к серверам Telegram...")
                     connState is TdApi.ConnectionStateWaitingForNetwork -> Pair(TgErrorRed, "Ожидание сети (проверьте подключение/прокси)")
                     proxyConfig.mode == ProxyConnectionMode.CUSTOM && proxyConfig.activeProxy?.status == ProxyStatus.CONNECTED ->
                         Pair(TgSuccessGreen, "Прокси активен (${proxyConfig.activeProxy?.displayAddress}) • Готов к входу")
-                    proxyConfig.mode == ProxyConnectionMode.CUSTOM -> Pair(Color(0xFFFFB74D), "Подключение через прокси...")
+                    proxyConfig.mode == ProxyConnectionMode.CUSTOM -> Pair(Color(0xFFFFB74D), "Подключение через $activeProxyDesc...")
                     authState is TdApi.AuthorizationStateWaitPhoneNumber -> Pair(TgAccentCyan, "Готов к входу • Введите номер")
                     authState is TdApi.AuthorizationStateWaitCode -> Pair(TgAccentCyan, "Код отправлен • Введите код")
                     authState is TdApi.AuthorizationStateWaitPassword -> Pair(TgAccentCyan, "Требуется пароль 2FA")
