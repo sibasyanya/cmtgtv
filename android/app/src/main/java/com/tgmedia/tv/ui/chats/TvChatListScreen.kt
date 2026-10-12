@@ -9,6 +9,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -19,8 +23,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.tv.material3.*
 import com.tgmedia.tv.data.tdlib.TdLibManager
+import com.tgmedia.tv.ui.proxy.TgAccentCyan
+import com.tgmedia.tv.ui.proxy.TgCardBg
+import com.tgmedia.tv.ui.proxy.TgDarkBg
+import com.tgmedia.tv.ui.proxy.TgPrimary
+import com.tgmedia.tv.ui.proxy.TgSurface
+import com.tgmedia.tv.ui.proxy.TgTextSecondary
+import com.tgmedia.tv.ui.proxy.TgTextWhite
+import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
 
 data class UiChatItem(
@@ -32,50 +43,81 @@ data class UiChatItem(
 )
 
 /**
- * 10-Foot UI экран списка каналов и чатов для Android TV с D-Pad навигацией.
+ * Преобразование реального TDLib объекта Chat в отображаемый элемент интерфейса ТВ.
  */
-@OptIn(ExperimentalTvMaterial3Api::class)
+fun TdApi.Chat.toUiChatItem(): UiChatItem {
+    val isChan = when (val t = this.type) {
+        is TdApi.ChatTypeSupergroup -> t.isChannel
+        else -> false
+    }
+    val preview = when (val msg = this.lastMessage?.content) {
+        is TdApi.MessageText -> msg.text.text
+        is TdApi.MessagePhoto -> if (msg.caption.text.isNotBlank()) "🖼️ ${msg.caption.text}" else "🖼️ Фото"
+        is TdApi.MessageVideo -> if (msg.caption.text.isNotBlank()) "📹 ${msg.caption.text}" else "📹 Видео"
+        is TdApi.MessageDocument -> if (msg.caption.text.isNotBlank()) "📄 ${msg.caption.text}" else "📄 Документ"
+        is TdApi.MessageVoiceNote -> "🎤 Голосовое сообщение"
+        is TdApi.MessageAudio -> "🎵 Аудиозапись"
+        is TdApi.MessageSticker -> "Стикер ${msg.sticker.emoji}"
+        is TdApi.MessageAnimation -> "GIF анимация"
+        is TdApi.MessageContact -> "Контакт: ${msg.contact.firstName}"
+        is TdApi.MessageLocation -> "Геолокация"
+        null -> "Нет сообщений"
+        else -> "Сообщение"
+    }
+    return UiChatItem(
+        id = this.id,
+        title = this.title.ifBlank { "Чат ${this.id}" },
+        lastMessage = preview,
+        unreadCount = this.unreadCount,
+        isChannel = isChan
+    )
+}
+
+/**
+ * 10-Foot UI экран списка каналов и чатов для Android TV с D-Pad навигацией.
+ * Отображает реальные чаты аккаунта из TDLib и предоставляет доступ в настройки профиля.
+ */
 @Composable
 fun TvChatListScreen(
     onSelectChat: (chatId: Long, title: String) -> Unit,
+    onOpenAccountSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val tdLibManager = remember { TdLibManager.getInstance() }
-    var chatList by remember { mutableStateOf<List<UiChatItem>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
+    val chatsFromTdLib by tdLibManager.chatsList.collectAsState()
+    val currentUser by tdLibManager.currentUser.collectAsState()
+    val coroutineScope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
-        // Загрузка чатов через TDLib
-        tdLibManager.loadChats(limit = 40).onSuccess { chatIds ->
-            val items = chatIds.map { id ->
-                UiChatItem(
-                    id = id,
-                    title = "Чат $id",
-                    lastMessage = "Последнее сообщение...",
-                    unreadCount = 0,
-                    isChannel = false
-                )
-            }
-            chatList = items
-            isLoading = false
-        }.onFailure {
-            // В случае отсутствия активных данных отображаем демонстрационный список
-            chatList = listOf(
-                UiChatItem(1001, "Cybermasters News", "Новый релиз клиента для Android TV!", 2, true),
-                UiChatItem(1002, "Кино & Сериалы 4K", "Подборка лучших фантастических фильмов недели", 0, true),
-                UiChatItem(1003, "Алексей (Android Dev)", "Проверил сборку TDLib C++, видео летает!", 1, false),
-                UiChatItem(1004, "Сообщество Android TV", "Кто настраивал голосовой ввод с пульта?", 5, false)
-            )
+    var isLoading by remember { mutableStateOf(false) }
+
+    fun refreshChats() {
+        isLoading = true
+        coroutineScope.launch {
+            tdLibManager.loadCurrentUser()
+            tdLibManager.loadDetailedChats(50)
             isLoading = false
         }
+    }
+
+    LaunchedEffect(Unit) {
+        if (chatsFromTdLib.isEmpty()) {
+            refreshChats()
+        } else {
+            tdLibManager.loadCurrentUser()
+        }
+    }
+
+    val displayList = remember(chatsFromTdLib) {
+        chatsFromTdLib.map { it.toUiChatItem() }
     }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF090A0F))
-            .padding(horizontal = 48.dp, vertical = 32.dp)
+            .background(TgDarkBg)
+            .padding(horizontal = 48.dp, vertical = 24.dp)
     ) {
+        // Шапка экрана с навигацией
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -84,43 +126,133 @@ fun TvChatListScreen(
             Column {
                 Text(
                     text = "Чаты и Каналы Telegram",
-                    fontSize = 26.sp,
+                    fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    color = TgTextWhite
                 )
                 Text(
                     text = "Навигация стрелками пульта ДУ (Вверх/Вниз), выбор — кнопка ОК",
-                    fontSize = 14.sp,
-                    color = Color(0xFF9E9EAF)
+                    fontSize = 13.sp,
+                    color = TgTextSecondary
                 )
             }
 
-            Box(
-                modifier = Modifier
-                    .background(Color(0xFF1B2A38), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 14.dp, vertical = 6.dp)
+            // Правый блок действий в шапке
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = "TDLib Online",
-                    fontSize = 13.sp,
-                    color = Color(0xFF38BDF8),
-                    fontWeight = FontWeight.Medium
-                )
+                // Кнопка обновления
+                var isRefreshFocused by remember { mutableStateOf(false) }
+                Button(
+                    onClick = { refreshChats() },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isRefreshFocused) TgAccentCyan else TgSurface
+                    ),
+                    modifier = Modifier
+                        .onFocusChanged { isRefreshFocused = it.isFocused }
+                        .height(42.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = null,
+                        tint = if (isRefreshFocused) Color.Black else Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Обновить",
+                        color = if (isRefreshFocused) Color.Black else Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                // Кнопка настроек аккаунта и профиля
+                val profileName = currentUser?.firstName?.ifBlank { null }
+                    ?: currentUser?.usernames?.activeUsernames?.firstOrNull()
+                    ?: "Аккаунт"
+
+                var isProfileFocused by remember { mutableStateOf(false) }
+                Button(
+                    onClick = onOpenAccountSettings,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isProfileFocused) TgPrimary else TgSurface
+                    ),
+                    modifier = Modifier
+                        .onFocusChanged { isProfileFocused = it.isFocused }
+                        .height(42.dp)
+                ) {
+                    Icon(
+                        Icons.Default.AccountCircle,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Профиль ($profileName)",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
-        if (isLoading) {
+        if (isLoading && displayList.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Загрузка чатов из Telegram...", color = Color.LightGray, fontSize = 16.sp)
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = TgAccentCyan)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Загрузка чатов из вашего Telegram аккаунта...", color = TgTextWhite, fontSize = 16.sp)
+                }
+            }
+        } else if (displayList.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = TgCardBg),
+                    modifier = Modifier.width(540.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "Чаты не найдены",
+                            color = TgTextWhite,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "В вашем аккаунте пока нет синхронизированных диалогов или TDLib выполняет начальную загрузку каналов.",
+                            color = TgTextSecondary,
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp
+                        )
+                        Spacer(modifier = Modifier.height(20.dp))
+                        Button(
+                            onClick = { refreshChats() },
+                            colors = ButtonDefaults.buttonColors(containerColor = TgPrimary),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Повторить загрузку чатов", color = Color.White)
+                        }
+                    }
+                }
             }
         } else {
             LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(chatList) { chat ->
+                items(displayList, key = { it.id }) { chat ->
                     ChatRowItem(
                         chat = chat,
                         onClick = { onSelectChat(chat.id, chat.title) }
@@ -144,30 +276,29 @@ fun ChatRowItem(
         modifier = Modifier
             .fillMaxWidth()
             .onFocusChanged { isFocused = it.isFocused }
-            .background(
-                if (isFocused) Color(0xFF1E2235) else Color(0xFF13151F),
-                RoundedCornerShape(16.dp)
-            )
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (isFocused) Color(0xFF1E293B) else TgCardBg)
             .border(
                 width = if (isFocused) 3.dp else 1.dp,
-                color = if (isFocused) Color(0xFF38BDF8) else Color(0xFF222533),
-                shape = RoundedCornerShape(16.dp)
+                color = if (isFocused) TgAccentCyan else Color(0xFF222B3D),
+                shape = RoundedCornerShape(14.dp)
             )
             .clickable { onClick() }
             .focusable()
-            .padding(horizontal = 20.dp, vertical = 16.dp)
+            .padding(horizontal = 20.dp, vertical = 14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-            // Аватар
+            // Аватар с инициалом
+            val firstLetter = chat.title.trim().take(1).uppercase().ifBlank { "#" }
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .size(48.dp)
+                    .size(46.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF2B3245))
+                    .background(if (chat.isChannel) TgPrimary else Color(0xFF334155))
             ) {
                 Text(
-                    text = chat.title.take(1),
+                    text = firstLetter,
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp
@@ -181,19 +312,20 @@ fun ChatRowItem(
                     Text(
                         text = chat.title,
                         fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        color = TgTextWhite,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     if (chat.isChannel) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Box(
                             modifier = Modifier
-                                .background(Color(0xFF0284C7), RoundedCornerShape(4.dp))
+                                .background(TgPrimary, RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
-                            Text("Канал", fontSize = 10.sp, color = Color.White)
+                            Text("Канал", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -201,7 +333,7 @@ fun ChatRowItem(
                 Text(
                     text = chat.lastMessage,
                     fontSize = 13.sp,
-                    color = Color(0xFFA1A1AA),
+                    color = if (isFocused) Color(0xFFE2E8F0) else TgTextSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -214,7 +346,7 @@ fun ChatRowItem(
                 modifier = Modifier
                     .padding(start = 12.dp)
                     .size(26.dp)
-                    .background(Color(0xFF0284C7), CircleShape)
+                    .background(TgPrimary, CircleShape)
             ) {
                 Text(
                     text = "${chat.unreadCount}",

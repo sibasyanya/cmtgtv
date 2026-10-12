@@ -716,8 +716,7 @@ fun ProxyEditDialog(
                                     id = initialItem?.id ?: java.util.UUID.randomUUID().toString(),
                                     type = selectedType,
                                     host = host.trim(),
-                                    port = port,
-                                    secret = secret.trim(),
+                                    secret = if (selectedType == ProxyItemType.MTPROTO || selectedType == ProxyItemType.WEB) normalizeMtprotoSecret(secret) else secret.trim(),
                                     username = username.trim(),
                                     password = password.trim()
                                 )

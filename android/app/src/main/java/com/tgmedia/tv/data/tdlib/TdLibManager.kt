@@ -23,7 +23,13 @@ import org.drinkless.tdlib.Client
 import org.drinkless.tdlib.TdApi
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
+
+/**
+ * Исключение с кодом ошибки TDLib (например, 404 для конца списка чатов)
+ */
+class TdLibResponseException(val code: Int, message: String) : Exception("TDLib Error [$code]: $message")
 
 /**
  * Реактивный менеджер TDLib для Android TV.
@@ -56,6 +62,15 @@ class TdLibManager private constructor() {
     // Поток входящих обновлений данных
     private val _updates = MutableSharedFlow<TdApi.Update>(extraBufferCapacity = 128)
     val updates: SharedFlow<TdApi.Update> = _updates.asSharedFlow()
+
+    // Хранилище реальных чатов Telegram
+    val chatsMap = ConcurrentHashMap<Long, TdApi.Chat>()
+    private val _chatsList = MutableStateFlow<List<TdApi.Chat>>(emptyList())
+    val chatsList: StateFlow<List<TdApi.Chat>> = _chatsList.asStateFlow()
+
+    // Текущий авторизованный профиль пользователя Telegram
+    private val _currentUser = MutableStateFlow<TdApi.User?>(null)
+    val currentUser: StateFlow<TdApi.User?> = _currentUser.asStateFlow()
 
     private var client: Client? = null
     private var config: TdLibConfig? = null
@@ -216,6 +231,10 @@ class TdLibManager private constructor() {
                     is TdApi.AuthorizationStateReady -> {
                         Log.i(TAG, "AuthorizationStateReady: User logged in successfully!")
                         _lastError.value = null
+                        scope.launch {
+                            loadCurrentUser()
+                            loadDetailedChats(40)
+                        }
                     }
                     is TdApi.AuthorizationStateClosed -> {
                         Log.i(TAG, "TDLib Client session closed.")
@@ -241,12 +260,73 @@ class TdLibManager private constructor() {
                 }
             }
             is TdApi.Update -> {
+                handleTdLibUpdate(event)
                 scope.launch {
                     _updates.emit(event)
                 }
             }
             else -> Unit
         }
+    }
+
+    private fun handleTdLibUpdate(update: TdApi.Update) {
+        when (update) {
+            is TdApi.UpdateNewChat -> {
+                chatsMap[update.chat.id] = update.chat
+                refreshChatsList()
+            }
+            is TdApi.UpdateChatTitle -> {
+                chatsMap[update.chatId]?.let {
+                    it.title = update.title
+                    refreshChatsList()
+                }
+            }
+            is TdApi.UpdateChatLastMessage -> {
+                chatsMap[update.chatId]?.let {
+                    it.lastMessage = update.lastMessage
+                    it.positions = update.positions
+                    refreshChatsList()
+                }
+            }
+            is TdApi.UpdateChatPosition -> {
+                chatsMap[update.chatId]?.let { chat ->
+                    val existing = chat.positions?.filter { it.list?.constructor != update.position?.list?.constructor }?.toMutableList() ?: mutableListOf()
+                    if (update.position != null && update.position.order != 0L) {
+                        existing.add(update.position)
+                    }
+                    chat.positions = existing.toTypedArray()
+                    refreshChatsList()
+                }
+            }
+            is TdApi.UpdateChatReadInbox -> {
+                chatsMap[update.chatId]?.let {
+                    it.unreadCount = update.unreadCount
+                    it.lastReadInboxMessageId = update.lastReadInboxMessageId
+                    refreshChatsList()
+                }
+            }
+            is TdApi.UpdateUser -> {
+                if (_currentUser.value?.id == update.user.id) {
+                    _currentUser.value = update.user
+                }
+            }
+            is TdApi.UpdateUserStatus -> {
+                if (_currentUser.value?.id == update.userId) {
+                    _currentUser.value?.status = update.status
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun refreshChatsList() {
+        val sorted = chatsMap.values.toList().sortedWith(
+            compareByDescending { chat ->
+                val primaryOrder = chat.positions?.firstOrNull()?.order ?: 0L
+                if (primaryOrder > 0) primaryOrder else (chat.lastMessage?.date?.toLong() ?: 0L)
+            }
+        )
+        _chatsList.value = sorted
     }
 
     /**
@@ -580,23 +660,49 @@ class TdLibManager private constructor() {
         updateProxyStatus(proxyId, ProxyStatus.CHECKING, null)
 
         scope.launch {
-            val checkResult = MtprotoScraper.verifyProxySocket(item.host, item.port, timeoutMs = 3000)
-            val isSuccess = checkResult.first
-            val latency = if (isSuccess) checkResult.second else null
-            val newStatus = if (isSuccess) {
-                if (current.mode == ProxyConnectionMode.CUSTOM && current.selectedProxyId == proxyId) {
-                    ProxyStatus.CONNECTED
-                } else {
-                    ProxyStatus.AVAILABLE
+            if (client != null) {
+                pingProxyWithTdLib(item) { tdOk, tdMs, tdErr ->
+                    if (tdOk && tdMs != null) {
+                        val status = if (current.mode == ProxyConnectionMode.CUSTOM && current.selectedProxyId == proxyId) {
+                            ProxyStatus.CONNECTED
+                        } else {
+                            ProxyStatus.AVAILABLE
+                        }
+                        updateProxyStatus(proxyId, status, tdMs)
+                        onResult(true, tdMs, null)
+                    } else {
+                        // Fallback socket check
+                        scope.launch {
+                            val checkResult = MtprotoScraper.verifyProxySocket(item.host, item.port, timeoutMs = 3000)
+                            val isSuccess = checkResult.first
+                            val latency = if (isSuccess) checkResult.second else null
+                            val newStatus = if (isSuccess) ProxyStatus.AVAILABLE else ProxyStatus.UNAVAILABLE
+                            updateProxyStatus(proxyId, newStatus, latency)
+                            withContext(Dispatchers.Main) {
+                                onResult(isSuccess, latency, if (isSuccess) null else (tdErr ?: "Таймаут соединения"))
+                            }
+                        }
+                    }
                 }
             } else {
-                ProxyStatus.UNAVAILABLE
-            }
+                val checkResult = MtprotoScraper.verifyProxySocket(item.host, item.port, timeoutMs = 3000)
+                val isSuccess = checkResult.first
+                val latency = if (isSuccess) checkResult.second else null
+                val newStatus = if (isSuccess) {
+                    if (current.mode == ProxyConnectionMode.CUSTOM && current.selectedProxyId == proxyId) {
+                        ProxyStatus.CONNECTED
+                    } else {
+                        ProxyStatus.AVAILABLE
+                    }
+                } else {
+                    ProxyStatus.UNAVAILABLE
+                }
 
-            updateProxyStatus(proxyId, newStatus, latency)
+                updateProxyStatus(proxyId, newStatus, latency)
 
-            withContext(Dispatchers.Main) {
-                onResult(isSuccess, latency, if (isSuccess) null else "Таймаут соединения")
+                withContext(Dispatchers.Main) {
+                    onResult(isSuccess, latency, if (isSuccess) null else "Таймаут соединения")
+                }
             }
         }
     }
@@ -720,6 +826,9 @@ class TdLibManager private constructor() {
                     if (result is TdApi.AddedProxy) {
                         Log.i(TAG, "Proxy added & enabled in TDLib. TDLib ID: ${result.id}")
                         activeTdlibProxyId = result.id
+                        send(TdApi.EnableProxy(result.id)) { enableRes ->
+                            Log.i(TAG, "EnableProxy ID ${result.id} result: $enableRes")
+                        }
                         updateProxyStatus(activeProxy.id, ProxyStatus.CONNECTED, activeProxy.pingMs)
                         updateNetworkType()
                     } else if (result is TdApi.Error) {
@@ -875,7 +984,7 @@ class TdLibManager private constructor() {
             activeClient.send(query) { result ->
                 if (result is TdApi.Error) {
                     continuation.resume(
-                        Result.failure(Exception("TDLib Error [${result.code}]: ${result.message}"))
+                        Result.failure(TdLibResponseException(result.code, result.message))
                     )
                 } else {
                     @Suppress("UNCHECKED_CAST")
@@ -895,16 +1004,80 @@ class TdLibManager private constructor() {
         }
     }
 
-    suspend fun loadChats(limit: Int = 30): Result<List<Long>> {
+    /**
+     * Загрузка чатов в TDLib. TDLib возвращает ошибку 404, когда все чаты уже подгружены.
+     */
+    suspend fun loadChats(limit: Int = 40): Result<List<Long>> {
         if (!isNativeLibraryLoaded || client == null) {
-            return Result.success(listOf(1001L, 1002L, 1003L, 1004L, 1005L))
+            return Result.success(emptyList())
         }
         val loadResult = execute(TdApi.LoadChats(null, limit))
         if (loadResult.isFailure) {
-            return Result.failure(loadResult.exceptionOrNull() ?: Exception("Failed to load chats"))
+            val err = loadResult.exceptionOrNull()
+            if (err !is TdLibResponseException || err.code != 404) {
+                Log.w(TAG, "LoadChats notice: ${err?.message}")
+            }
         }
         val chatsResult = execute(TdApi.GetChats(null, limit))
         return chatsResult.map { it.chatIds.toList() }
+    }
+
+    /**
+     * Загрузка реальных чатов с полными названиями, сообщениями и аватарками.
+     */
+    suspend fun loadDetailedChats(limit: Int = 40): Result<List<TdApi.Chat>> {
+        if (!isNativeLibraryLoaded || client == null) {
+            return Result.success(emptyList())
+        }
+        try {
+            execute(TdApi.LoadChats(null, limit))
+        } catch (_: Exception) {}
+
+        val chatsResult = execute(TdApi.GetChats(null, limit))
+        val chatIds = chatsResult.getOrNull()?.chatIds ?: longArrayOf()
+
+        for (id in chatIds) {
+            if (!chatsMap.containsKey(id)) {
+                try {
+                    val chatRes = execute(TdApi.GetChat(id))
+                    chatRes.getOrNull()?.let { chat ->
+                        chatsMap[chat.id] = chat
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to getChat for $id: ${e.message}")
+                }
+            }
+        }
+        refreshChatsList()
+        return Result.success(_chatsList.value)
+    }
+
+    /**
+     * Загрузка профиля текущего пользователя Telegram (GetMe).
+     */
+    suspend fun loadCurrentUser(): Result<TdApi.User> {
+        val res = execute(TdApi.GetMe())
+        res.getOrNull()?.let { user ->
+            _currentUser.value = user
+        }
+        return res
+    }
+
+    /**
+     * Проверка отклика Telegram через TDLib PingProxy.
+     */
+    fun pingProxyWithTdLib(proxyItem: TelegramProxyItem, onResult: (Boolean, Long?, String?) -> Unit) {
+        val tdProxy = proxyItem.toTdProxy()
+        send(TdApi.PingProxy(tdProxy)) { result ->
+            if (result is TdApi.Seconds) {
+                val ms = (result.seconds * 1000).toLong()
+                updateProxyStatus(proxyItem.id, ProxyStatus.AVAILABLE, ms)
+                onResult(true, ms, null)
+            } else if (result is TdApi.Error) {
+                updateProxyStatus(proxyItem.id, ProxyStatus.UNAVAILABLE, null)
+                onResult(false, null, result.message)
+            }
+        }
     }
 
     suspend fun getChatHistory(
@@ -927,6 +1100,9 @@ class TdLibManager private constructor() {
 
     fun logOut(onComplete: () -> Unit = {}) {
         send(TdApi.LogOut()) {
+            _currentUser.value = null
+            chatsMap.clear()
+            _chatsList.value = emptyList()
             onComplete()
         }
     }

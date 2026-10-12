@@ -1,9 +1,45 @@
 package com.tgmedia.tv.data.tdlib
 
+import android.util.Base64
 import org.drinkless.tdlib.TdApi
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+
+/**
+ * Нормализация MTProto секрета в шестнадцатеричный (HEX) формат,
+ * требуемый TDLib (TdApi.ProxyTypeMtproto). Поддерживает Base64/Base64URL и FakeTLS.
+ */
+fun normalizeMtprotoSecret(rawSecret: String): String {
+    val clean = rawSecret.trim().removePrefix("secret=").trim()
+    if (clean.isEmpty()) return clean
+
+    // Если уже валидный HEX (четное число символов >= 32, только 0-9, a-f, A-F)
+    val isHex = clean.length >= 32 && clean.all { c ->
+        (c in '0'..'9') || (c in 'a'..'f') || (c in 'A'..'F')
+    }
+    if (isHex && clean.length % 2 == 0) {
+        return clean.lowercase()
+    }
+
+    // Если это Base64 или Base64URL (часто встречается в ссылках tg://proxy)
+    try {
+        val sanitizedB64 = clean.replace('-', '+').replace('_', '/')
+        val padLength = (4 - (sanitizedB64.length % 4)) % 4
+        val padded = sanitizedB64 + "=".repeat(padLength)
+        val decodedBytes = Base64.decode(padded, Base64.DEFAULT)
+        if (decodedBytes != null && decodedBytes.size >= 16) {
+            val sb = StringBuilder(decodedBytes.size * 2)
+            for (b in decodedBytes) {
+                sb.append(String.format("%02x", b.toInt() and 0xFF))
+            }
+            return sb.toString()
+        }
+    } catch (_: Exception) {
+    }
+
+    return clean.lowercase()
+}
 
 /**
  * Режим использования Proxy в соответствии с официальным клиентом Telegram:
@@ -32,7 +68,10 @@ enum class ProxyItemType {
 
     fun toTdLibProxyType(secret: String, username: String, password: String): TdApi.ProxyType {
         return when (this) {
-            MTPROTO, WEB -> TdApi.ProxyTypeMtproto(secret)
+            MTPROTO, WEB -> {
+                val hexSecret = normalizeMtprotoSecret(secret)
+                TdApi.ProxyTypeMtproto(hexSecret)
+            }
             SOCKS5 -> TdApi.ProxyTypeSocks5(username, password)
             HTTP -> TdApi.ProxyTypeHttp(username, password, false)
         }

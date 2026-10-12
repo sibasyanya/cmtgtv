@@ -5,14 +5,18 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
+import com.tgmedia.tv.data.tdlib.TdLibManager
+import com.tgmedia.tv.ui.account.TvAccountSettingsScreen
 import com.tgmedia.tv.ui.auth.QrAuthScreen
 import com.tgmedia.tv.ui.chats.TvChatDetailScreen
 import com.tgmedia.tv.ui.chats.TvChatListScreen
+import org.drinkless.tdlib.TdApi
 
 sealed class TvScreen {
     object Auth : TvScreen()
     object ChatList : TvScreen()
     data class ChatDetail(val chatId: Long, val chatTitle: String) : TvScreen()
+    object AccountSettings : TvScreen()
 }
 
 /**
@@ -25,23 +29,33 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         setContent {
+            val tdLibManager = remember { TdLibManager.getInstance() }
+            val authState by tdLibManager.authorizationState.collectAsState()
+
             var currentScreen by remember { mutableStateOf<TvScreen>(TvScreen.Auth) }
+
+            // Если сессия уже авторизована в TDLib, сразу переключаемся в список чатов
+            LaunchedEffect(authState) {
+                if (authState is TdApi.AuthorizationStateReady && currentScreen is TvScreen.Auth) {
+                    currentScreen = TvScreen.ChatList
+                } else if (authState !is TdApi.AuthorizationStateReady && currentScreen !is TvScreen.Auth) {
+                    currentScreen = TvScreen.Auth
+                }
+            }
 
             // Обработка кнопки «Назад» на пульте ТВ:
             // Если находимся в чате -> возвращаемся в список чатов
-            // Если в списке чатов -> возвращаемся на экран авторизации/главный экран
-            // Если уже на Auth -> стандартный выход из приложения
-            BackHandler(enabled = currentScreen !is TvScreen.Auth) {
+            // Если в настройках аккаунта -> возвращаемся в список чатов
+            // Если в списке чатов -> система безопасно сворачивает приложение (не выбрасывает на ввод номера)
+            BackHandler(enabled = currentScreen !is TvScreen.ChatList && currentScreen !is TvScreen.Auth) {
                 when (currentScreen) {
                     is TvScreen.ChatDetail -> {
                         currentScreen = TvScreen.ChatList
                     }
-                    is TvScreen.ChatList -> {
-                        currentScreen = TvScreen.Auth
+                    is TvScreen.AccountSettings -> {
+                        currentScreen = TvScreen.ChatList
                     }
-                    is TvScreen.Auth -> {
-                        // Позволяем системе свернуть приложение
-                    }
+                    else -> Unit
                 }
             }
 
@@ -57,6 +71,9 @@ class MainActivity : ComponentActivity() {
                     TvChatListScreen(
                         onSelectChat = { chatId, title ->
                             currentScreen = TvScreen.ChatDetail(chatId, title)
+                        },
+                        onOpenAccountSettings = {
+                            currentScreen = TvScreen.AccountSettings
                         }
                     )
                 }
@@ -66,6 +83,16 @@ class MainActivity : ComponentActivity() {
                         chatTitle = screen.chatTitle,
                         onBack = {
                             currentScreen = TvScreen.ChatList
+                        }
+                    )
+                }
+                is TvScreen.AccountSettings -> {
+                    TvAccountSettingsScreen(
+                        onBack = {
+                            currentScreen = TvScreen.ChatList
+                        },
+                        onLogOut = {
+                            currentScreen = TvScreen.Auth
                         }
                     )
                 }

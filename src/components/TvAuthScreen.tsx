@@ -12,7 +12,8 @@ import {
   KeyRound,
   Lock,
   X,
-  Server
+  Server,
+  AlertTriangle
 } from 'lucide-react';
 
 interface TvAuthScreenProps {
@@ -87,22 +88,52 @@ export const TvAuthScreen: React.FC<TvAuthScreenProps> = ({
     }
   ]);
 
+  const [countdown, setCountdown] = useState(60);
+  const [diagnosticMsg, setDiagnosticMsg] = useState<string | null>(null);
+  const timerRef = React.useRef<any>(null);
+
+  const startSubmitTimer = (onDone: () => void) => {
+    setIsSubmitting(true);
+    setDiagnosticMsg(null);
+    setCountdown(60);
+    if (timerRef.current) clearInterval(timerRef.current);
+    let remaining = 60;
+    timerRef.current = setInterval(() => {
+      remaining -= 1;
+      setCountdown(remaining);
+      if (remaining <= 0) {
+        clearInterval(timerRef.current);
+        setIsSubmitting(false);
+        setDiagnosticMsg('Превышено время ожидания ответа Telegram (60 сек). Текущий статус: Подключение через MTProto Proxy. Рекомендация: переключитесь на Socks5 в настройках прокси.');
+      }
+    }, 1000);
+
+    setTimeout(() => {
+      clearInterval(timerRef.current);
+      setIsSubmitting(false);
+      onDone();
+    }, 1000);
+  };
+
+  const handleCancelSubmit = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setIsSubmitting(false);
+    setCountdown(60);
+    setDiagnosticMsg('Запрос отменен пользователем.');
+  };
+
   const handlePhoneSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
+    startSubmitTimer(() => {
       setAuthStep('code');
-    }, 600);
+    });
   };
 
   const handleCodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
+    startSubmitTimer(() => {
       onSimulateLogin();
-    }, 600);
+    });
   };
 
   const handleScrapeMtproto = () => {
@@ -248,7 +279,7 @@ export const TvAuthScreen: React.FC<TvAuthScreenProps> = ({
                 {isSubmitting ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Отправка запроса...</span>
+                    <span>Отправка запроса ({countdown}с)...</span>
                   </>
                 ) : (
                   <>
@@ -257,6 +288,35 @@ export const TvAuthScreen: React.FC<TvAuthScreenProps> = ({
                   </>
                 )}
               </button>
+
+              {isSubmitting && (
+                <button
+                  type="button"
+                  onClick={handleCancelSubmit}
+                  className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition-all shadow-lg flex items-center justify-center gap-2"
+                >
+                  <X className="w-4 h-4" />
+                  <span>Отменить запрос ({countdown}с)</span>
+                </button>
+              )}
+
+              {diagnosticMsg && (
+                <div className="bg-red-950/60 border border-red-500/40 p-3 rounded-xl text-xs text-red-200">
+                  <div className="flex items-center gap-2 font-bold text-red-300 mb-1">
+                    <AlertTriangle className="w-4 h-4 text-red-400" />
+                    <span>Диагностика подключения</span>
+                  </div>
+                  <p>{diagnosticMsg}</p>
+                  <button
+                    type="button"
+                    onClick={() => setShowProxyModal(true)}
+                    className="mt-2 text-sky-400 hover:underline flex items-center gap-1 font-semibold"
+                  >
+                    <Settings className="w-3.5 h-3.5" />
+                    <span>Открыть настройки прокси / Socks5</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Right Column: TV Numeric Keypad */}

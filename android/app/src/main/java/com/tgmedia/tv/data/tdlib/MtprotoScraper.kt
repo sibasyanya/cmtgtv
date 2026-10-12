@@ -44,7 +44,7 @@ object MtprotoScraper {
             type = ProxyItemType.MTPROTO,
             host = "95.216.144.135",
             port = 443,
-            secret = "7gAAAAAAAAAAAAAAAAAAAAB3d3cuZ29vZ2xlLmNvbQ",
+            secret = "ee000000000000000000000000000000007777772e676f6f676c652e636f6d",
             comment = "Google TLS MTProto"
         ),
         TelegramProxyItem(
@@ -179,7 +179,8 @@ object MtprotoScraper {
         for (match in textTableRegex.findAll(cleanHtml)) {
             val host = match.groupValues[1].trim()
             val port = match.groupValues[2].toIntOrNull() ?: 443
-            val secret = match.groupValues[3].trim()
+            val rawSecret = match.groupValues[3].trim()
+            val secret = normalizeMtprotoSecret(rawSecret)
             if (host.isNotBlank() && secret.isNotBlank()) {
                 proxies.add(
                     TelegramProxyItem(
@@ -228,7 +229,8 @@ object MtprotoScraper {
                     status = ProxyStatus.CHECKING
                 )
             } else {
-                val secret = params["secret"] ?: ""
+                val rawSecret = params["secret"] ?: ""
+                val secret = normalizeMtprotoSecret(rawSecret)
                 val isWeb = schemeAndAction.contains("webproxy")
                 return TelegramProxyItem(
                     id = UUID.randomUUID().toString(),

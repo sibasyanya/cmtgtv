@@ -25,6 +25,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.tgmedia.tv.data.tdlib.*
 import com.tgmedia.tv.ui.proxy.ProxySettingsDialog
 import com.tgmedia.tv.ui.proxy.TgAccentCyan
@@ -57,16 +60,56 @@ fun QrAuthScreen(
     val proxyConfig by tdLibManager.telegramProxyConfig.collectAsState()
     val context = LocalContext.current
 
+    val coroutineScope = rememberCoroutineScope()
     var phoneNumber by remember { mutableStateOf("+7") }
     var authCode by remember { mutableStateOf("") }
     var cloudPassword by remember { mutableStateOf("") }
     var isSubmitting by remember { mutableStateOf(false) }
+    var countdownSeconds by remember { mutableStateOf(60) }
+    var submitTimeoutJob by remember { mutableStateOf<Job?>(null) }
+    var diagnosticMessage by remember { mutableStateOf<String?>(null) }
     var showProxyDialog by remember { mutableStateOf(false) }
     var showResetConfirm by remember { mutableStateOf(false) }
+
+    fun cancelActiveSubmission(reason: String? = null) {
+        submitTimeoutJob?.cancel()
+        submitTimeoutJob = null
+        isSubmitting = false
+        countdownSeconds = 60
+        if (reason != null) {
+            diagnosticMessage = reason
+            Toast.makeText(context, reason, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun startSubmissionWithTimeout(action: () -> Unit) {
+        diagnosticMessage = null
+        isSubmitting = true
+        countdownSeconds = 60
+        submitTimeoutJob?.cancel()
+        submitTimeoutJob = coroutineScope.launch {
+            while (countdownSeconds > 0) {
+                delay(1000)
+                countdownSeconds--
+            }
+            val connName = when (connState) {
+                is TdApi.ConnectionStateConnectingToProxy -> "Подключение к MTProto Proxy (сервер не отвечает)"
+                is TdApi.ConnectionStateConnecting -> "Подключение к серверам Telegram"
+                is TdApi.ConnectionStateWaitingForNetwork -> "Ожидание сети (проверьте интернет на ТВ)"
+                is TdApi.ConnectionStateUpdating -> "Обновление данных Telegram"
+                is TdApi.ConnectionStateReady -> "Подключено к Telegram"
+                null -> "Инициализация TDLib"
+            }
+            val diag = "Превышено время ожидания ответа Telegram (60 сек).\nСтатус сети: $connName.\nРекомендация: переключитесь на рабочий Socks5 прокси или смените сервер в настройках."
+            cancelActiveSubmission(diag)
+        }
+        action()
+    }
 
     // Реакция на успешную авторизацию
     LaunchedEffect(authState) {
         if (authState is TdApi.AuthorizationStateReady) {
+            submitTimeoutJob?.cancel()
             onAuthenticated()
         }
     }
@@ -132,21 +175,26 @@ fun QrAuthScreen(
                             phoneNumber = phoneNumber,
                             code = authCode,
                             isSubmitting = isSubmitting,
+                            countdownSeconds = countdownSeconds,
                             onCodeChange = { authCode = it },
                             onSubmit = {
                                 if (authCode.length < 5) {
                                     Toast.makeText(context, "Введите 5 цифр кода", Toast.LENGTH_SHORT).show()
                                     return@AuthCodeStageView
                                 }
-                                isSubmitting = true
-                                tdLibManager.checkAuthenticationCode(authCode) { ok, err ->
-                                    isSubmitting = false
-                                    if (err != null) {
-                                        Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+                                startSubmissionWithTimeout {
+                                    tdLibManager.checkAuthenticationCode(authCode) { ok, err ->
+                                        if (ok) {
+                                            cancelActiveSubmission(null)
+                                        } else {
+                                            cancelActiveSubmission(err)
+                                        }
                                     }
                                 }
                             },
+                            onCancel = { cancelActiveSubmission("Запрос отменен пользователем") },
                             onBackToPhone = {
+                                submitTimeoutJob?.cancel()
                                 authCode = ""
                                 tdLibManager.restartSession(clearDatabase = false)
                             },
@@ -164,21 +212,26 @@ fun QrAuthScreen(
                         AuthPasswordStageView(
                             password = cloudPassword,
                             isSubmitting = isSubmitting,
+                            countdownSeconds = countdownSeconds,
                             onPasswordChange = { cloudPassword = it },
                             onSubmit = {
                                 if (cloudPassword.isBlank()) {
                                     Toast.makeText(context, "Введите пароль 2FA", Toast.LENGTH_SHORT).show()
                                     return@AuthPasswordStageView
                                 }
-                                isSubmitting = true
-                                tdLibManager.checkAuthenticationPassword(cloudPassword) { ok, err ->
-                                    isSubmitting = false
-                                    if (err != null) {
-                                        Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+                                startSubmissionWithTimeout {
+                                    tdLibManager.checkAuthenticationPassword(cloudPassword) { ok, err ->
+                                        if (ok) {
+                                            cancelActiveSubmission(null)
+                                        } else {
+                                            cancelActiveSubmission(err)
+                                        }
                                     }
                                 }
                             },
+                            onCancel = { cancelActiveSubmission("Запрос отменен пользователем") },
                             onBack = {
+                                submitTimeoutJob?.cancel()
                                 cloudPassword = ""
                                 tdLibManager.restartSession(clearDatabase = false)
                             }
@@ -190,6 +243,7 @@ fun QrAuthScreen(
                         PhoneNumberStageView(
                             phoneNumber = phoneNumber,
                             isSubmitting = isSubmitting,
+                            countdownSeconds = countdownSeconds,
                             connState = connState,
                             onPhoneChange = { phoneNumber = it },
                             onSubmit = {
@@ -198,14 +252,19 @@ fun QrAuthScreen(
                                     Toast.makeText(context, "Укажите номер телефона в международном формате", Toast.LENGTH_LONG).show()
                                     return@PhoneNumberStageView
                                 }
-                                isSubmitting = true
-                                tdLibManager.sendAuthenticationPhoneNumber(phoneNumber) { ok, err ->
-                                    isSubmitting = false
-                                    if (err != null) {
-                                        Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+                                startSubmissionWithTimeout {
+                                    tdLibManager.sendAuthenticationPhoneNumber(phoneNumber) { ok, err ->
+                                        if (ok) {
+                                            cancelActiveSubmission(null)
+                                        } else {
+                                            cancelActiveSubmission(err)
+                                        }
                                     }
                                 }
-                            }
+                            },
+                            onCancel = { cancelActiveSubmission("Запрос отменен пользователем") },
+                            diagnosticMessage = diagnosticMessage,
+                            onOpenProxySettings = { showProxyDialog = true }
                         )
                     }
                 }
@@ -364,9 +423,13 @@ private fun TopStatusBar(
 private fun PhoneNumberStageView(
     phoneNumber: String,
     isSubmitting: Boolean,
+    countdownSeconds: Int,
     connState: TdApi.ConnectionState?,
     onPhoneChange: (String) -> Unit,
-    onSubmit: () -> Unit
+    onSubmit: () -> Unit,
+    onCancel: () -> Unit,
+    diagnosticMessage: String?,
+    onOpenProxySettings: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -454,7 +517,7 @@ private fun PhoneNumberStageView(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // КНОПКА АВТОРИЗАЦИИ (ВСЕГДА ВИДНА СЛЕВА ПОД ПОЛЕМ ВВОДА)
+                // КНОПКА АВТОРИЗАЦИИ
                 Button(
                     onClick = onSubmit,
                     enabled = !isSubmitting,
@@ -471,7 +534,7 @@ private fun PhoneNumberStageView(
                             strokeWidth = 2.dp
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Отправка запроса...", color = Color.White, fontSize = 14.sp)
+                        Text("Отправка запроса (${countdownSeconds}с)...", color = Color.White, fontSize = 14.sp)
                     } else {
                         Icon(Icons.Default.ArrowForward, contentDescription = null, tint = Color.White)
                         Spacer(modifier = Modifier.width(8.dp))
@@ -481,6 +544,57 @@ private fun PhoneNumberStageView(
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold
                         )
+                    }
+                }
+
+                // КНОПКА ОТМЕНЫ (ДОСТУПНА В ЛЮБОЙ МОМЕНТ ВО ВРЕМЯ ОЖИДАНИЯ)
+                if (isSubmitting) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = onCancel,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(42.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = TgErrorRed)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Отменить запрос (${countdownSeconds}с)",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                // ДИАГНОСТИЧЕСКАЯ ИНФОРМАЦИЯ ПРИ ОШИБКЕ/ТАЙМАУТЕ
+                if (diagnosticMessage != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF2A1515))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Warning, contentDescription = null, tint = TgErrorRed, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Диагностика соединения", color = Color(0xFFFFB4AB), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(diagnosticMessage, color = Color(0xFFE2E2E9), fontSize = 12.sp, lineHeight = 16.sp)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = onOpenProxySettings,
+                                modifier = Modifier.height(34.dp),
+                                shape = RoundedCornerShape(6.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = TgSurface)
+                            ) {
+                                Text("⚙️ Сменить прокси / Socks5", color = TgAccentCyan, fontSize = 12.sp)
+                            }
+                        }
                     }
                 }
             }
@@ -520,8 +634,10 @@ private fun AuthCodeStageView(
     phoneNumber: String,
     code: String,
     isSubmitting: Boolean,
+    countdownSeconds: Int,
     onCodeChange: (String) -> Unit,
     onSubmit: () -> Unit,
+    onCancel: () -> Unit,
     onBackToPhone: () -> Unit,
     onResendCode: () -> Unit
 ) {
@@ -606,11 +722,27 @@ private fun AuthCodeStageView(
                     if (isSubmitting) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Проверка кода...", color = Color.White, fontSize = 14.sp)
+                        Text("Проверка кода (${countdownSeconds}с)...", color = Color.White, fontSize = 14.sp)
                     } else {
                         Icon(Icons.Default.Check, contentDescription = null, tint = Color.White)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Войти в Telegram", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                if (isSubmitting) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = onCancel,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = TgErrorRed)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Отменить проверку", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 
@@ -664,8 +796,10 @@ private fun AuthCodeStageView(
 private fun AuthPasswordStageView(
     password: String,
     isSubmitting: Boolean,
+    countdownSeconds: Int,
     onPasswordChange: (String) -> Unit,
     onSubmit: () -> Unit,
+    onCancel: () -> Unit,
     onBack: () -> Unit
 ) {
     Card(
@@ -732,9 +866,25 @@ private fun AuthPasswordStageView(
                 if (isSubmitting) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Проверка пароля...", color = Color.White)
+                    Text("Проверка пароля (${countdownSeconds}с)...", color = Color.White)
                 } else {
                     Text("Подтвердить пароль", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            if (isSubmitting) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = onCancel,
+                    modifier = Modifier
+                        .fillMaxWidth(0.9f)
+                        .height(40.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = TgErrorRed)
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Отменить ввод", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
