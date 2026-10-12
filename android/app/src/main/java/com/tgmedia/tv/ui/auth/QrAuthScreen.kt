@@ -99,6 +99,7 @@ fun QrAuthScreen(
                 is TdApi.ConnectionStateUpdating -> "Обновление данных Telegram"
                 is TdApi.ConnectionStateReady -> "Подключено к Telegram"
                 null -> "Инициализация TDLib"
+                else -> "Состояние сети TDLib (${connState?.javaClass?.simpleName})"
             }
             val diag = "Превышено время ожидания ответа Telegram (60 сек).\nСтатус сети: $connName.\nРекомендация: переключитесь на рабочий Socks5 прокси или смените сервер в настройках."
             cancelActiveSubmission(diag)
