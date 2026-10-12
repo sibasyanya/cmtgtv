@@ -509,6 +509,7 @@ fun ProxyEditDialog(
     onDismiss: () -> Unit,
     onSave: (TelegramProxyItem) -> Unit
 ) {
+    val tdLibManager = remember { TdLibManager.getInstance() }
     val isEdit = initialItem != null
     var selectedType by remember { mutableStateOf(initialItem?.type ?: ProxyItemType.MTPROTO) }
     var host by remember { mutableStateOf(initialItem?.host ?: "") }
@@ -690,10 +691,10 @@ fun ProxyEditDialog(
                             )
                             isCheckingLive = true
                             checkResultText = "Проверка отклика Telegram через ${selectedType.name}..."
-                            tdLibManager.pingProxyWithTdLib(checkItem) { ok, ms, err ->
+                            tdLibManager.pingProxyWithTdLib(checkItem) { ok: Boolean, ms: Long?, err: String? ->
                                 isCheckingLive = false
-                                checkResultText = if (ok && ms != null) {
-                                    "Отклик Telegram получен! Пинг: ${ms} мс"
+                                if (ok && ms != null) {
+                                    checkResultText = "Отклик Telegram получен! Пинг: ${ms} мс"
                                 } else {
                                     coroutineScope.launch {
                                         val sockRes = MtprotoScraper.verifyProxySocket(checkItem.host, checkItem.port)
@@ -703,7 +704,6 @@ fun ProxyEditDialog(
                                             "Сервер недоступен (таймаут TCP порта)"
                                         }
                                     }
-                                    checkResultText
                                 }
                             }
                         },
