@@ -2,6 +2,12 @@
 
 Все важные изменения проекта Cybermasters TG TV (CMTGTV) фиксируются в этом файле.
 
+## [1.0.31] - 2026-10-13
+
+### Исправлено
+- **Исправление компиляции экрана сообщений (`TvChatDetailScreen.kt`):**
+  - Добавлен отсутствующий явный импорт `androidx.compose.material3.CircularProgressIndicator`, устранивший ошибку сборщика Kotlin `Unresolved reference 'CircularProgressIndicator'`.
+
 ## [1.0.30] - 2026-10-13
 
 ### Добавлено и улучшено
