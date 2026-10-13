@@ -70,6 +70,15 @@ class TdLibManager private constructor() {
     private val _chatsList = MutableStateFlow<List<TdApi.Chat>>(emptyList())
     val chatsList: StateFlow<List<TdApi.Chat>> = _chatsList.asStateFlow()
 
+    // Кэш пользователей для отображения отправителей
+    val usersMap = ConcurrentHashMap<Long, TdApi.User>()
+
+    // Кэш локальных путей скачанных файлов (аватарки, фото и т.д.) fileId -> localPath
+    val filePathsMap = ConcurrentHashMap<Int, String>()
+    // Реактивное оповещение о загрузке файлов (fileId, localPath) для моментального обновления UI аватаров
+    private val _fileDownloadedState = MutableStateFlow<Map<Int, String>>(emptyMap())
+    val fileDownloadedState: StateFlow<Map<Int, String>> = _fileDownloadedState.asStateFlow()
+
     // Текущий авторизованный профиль пользователя Telegram
     private val _currentUser = MutableStateFlow<TdApi.User?>(null)
     val currentUser: StateFlow<TdApi.User?> = _currentUser.asStateFlow()
@@ -283,6 +292,13 @@ class TdLibManager private constructor() {
                     refreshChatsList()
                 }
             }
+            is TdApi.UpdateChatPhoto -> {
+                chatsMap[update.chatId]?.let {
+                    it.photo = update.photo
+                    downloadChatPhoto(it)
+                    refreshChatsList()
+                }
+            }
             is TdApi.UpdateChatLastMessage -> {
                 chatsMap[update.chatId]?.let {
                     it.lastMessage = update.lastMessage
@@ -308,13 +324,24 @@ class TdLibManager private constructor() {
                 }
             }
             is TdApi.UpdateUser -> {
+                usersMap[update.user.id] = update.user
                 if (_currentUser.value?.id == update.user.id) {
                     _currentUser.value = update.user
+                    downloadUserPhoto(update.user)
                 }
             }
             is TdApi.UpdateUserStatus -> {
+                usersMap[update.userId]?.status = update.status
                 if (_currentUser.value?.id == update.userId) {
                     _currentUser.value?.status = update.status
+                }
+            }
+            is TdApi.UpdateFile -> {
+                val updatedFile = update.file
+                val localPath = updatedFile.local?.path
+                if (!localPath.isNullOrBlank() && updatedFile.local?.isDownloadingCompleted == true) {
+                    filePathsMap[updatedFile.id] = localPath
+                    _fileDownloadedState.value = _fileDownloadedState.value + (updatedFile.id to localPath)
                 }
             }
             else -> Unit
@@ -1066,10 +1093,13 @@ class TdLibManager private constructor() {
                     val chatRes = execute(TdApi.GetChat(id))
                     chatRes.getOrNull()?.let { chat ->
                         chatsMap[chat.id] = chat
+                        downloadChatPhoto(chat)
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to getChat for $id: ${e.message}")
                 }
+            } else {
+                chatsMap[id]?.let { downloadChatPhoto(it) }
             }
         }
         refreshChatsList()
@@ -1083,6 +1113,8 @@ class TdLibManager private constructor() {
         val res = execute(TdApi.GetMe())
         res.getOrNull()?.let { user ->
             _currentUser.value = user
+            usersMap[user.id] = user
+            downloadUserPhoto(user)
         }
         return res
     }
@@ -1122,11 +1154,135 @@ class TdLibManager private constructor() {
         return execute(request)
     }
 
+    fun openChat(chatId: Long) {
+        send(TdApi.OpenChat(chatId)) {
+            Log.d(TAG, "Chat $chatId opened in TDLib.")
+        }
+    }
+
+    fun closeChat(chatId: Long) {
+        send(TdApi.CloseChat(chatId)) {
+            Log.d(TAG, "Chat $chatId closed in TDLib.")
+        }
+    }
+
+    /**
+     * Загрузка аватара чата через TDLib.
+     */
+    fun downloadChatPhoto(chat: TdApi.Chat) {
+        val file = chat.photo?.small ?: chat.photo?.big ?: return
+        downloadFile(file.id, priority = 16)
+    }
+
+    /**
+     * Загрузка аватара пользователя через TDLib.
+     */
+    fun downloadUserPhoto(user: TdApi.User) {
+        val file = user.profilePhoto?.small ?: user.profilePhoto?.big ?: return
+        downloadFile(file.id, priority = 16)
+    }
+
+    /**
+     * Получить локальный файл аватара чата (если уже скачан).
+     */
+    fun getChatPhotoPath(chat: TdApi.Chat?): String? {
+        if (chat == null) return null
+        val file = chat.photo?.small ?: chat.photo?.big ?: return null
+        val cached = filePathsMap[file.id]
+        if (!cached.isNullOrBlank()) return cached
+        val local = file.local?.path
+        if (!local.isNullOrBlank()) {
+            filePathsMap[file.id] = local
+            return local
+        }
+        downloadFile(file.id, priority = 16)
+        return null
+    }
+
+    /**
+     * Получить локальный файл аватара пользователя (если уже скачан).
+     */
+    fun getUserPhotoPath(user: TdApi.User?): String? {
+        if (user == null) return null
+        val file = user.profilePhoto?.small ?: user.profilePhoto?.big ?: return null
+        val cached = filePathsMap[file.id]
+        if (!cached.isNullOrBlank()) return cached
+        val local = file.local?.path
+        if (!local.isNullOrBlank()) {
+            filePathsMap[file.id] = local
+            return local
+        }
+        downloadFile(file.id, priority = 16)
+        return null
+    }
+
+    /**
+     * Скачивание файла через TDLib (аватары, миниатюры фото и т.д.).
+     */
+    fun downloadFile(fileId: Int, priority: Int = 16) {
+        if (fileId <= 0) return
+        send(TdApi.DownloadFile(fileId, priority, 0, 0, false)) { res ->
+            if (res is TdApi.File) {
+                val path = res.local?.path
+                if (!path.isNullOrBlank() && res.local?.isDownloadingCompleted == true) {
+                    filePathsMap[res.id] = path
+                    _fileDownloadedState.value = _fileDownloadedState.value + (res.id to path)
+                }
+            }
+        }
+    }
+
+    /**
+     * Получить имя отправителя сообщения по senderId (пользователь или канал).
+     */
+    suspend fun getSenderName(senderId: TdApi.MessageSender?): String {
+        return when (senderId) {
+            is TdApi.MessageSenderUser -> {
+                val cached = usersMap[senderId.userId]
+                if (cached != null) {
+                    val full = "${cached.firstName} ${cached.lastName}".trim()
+                    if (full.isNotBlank()) full else (cached.usernames?.activeUsernames?.firstOrNull() ?: "Пользователь")
+                } else {
+                    val userRes = execute(TdApi.GetUser(senderId.userId))
+                    val user = userRes.getOrNull()
+                    if (user != null) {
+                        usersMap[user.id] = user
+                        val full = "${user.firstName} ${user.lastName}".trim()
+                        if (full.isNotBlank()) full else (user.usernames?.activeUsernames?.firstOrNull() ?: "Пользователь")
+                    } else "Пользователь"
+                }
+            }
+            is TdApi.MessageSenderChat -> {
+                val cached = chatsMap[senderId.chatId]
+                if (cached != null) {
+                    cached.title.ifBlank { "Чат" }
+                } else {
+                    val chatRes = execute(TdApi.GetChat(senderId.chatId))
+                    chatRes.getOrNull()?.title ?: "Чат"
+                }
+            }
+            else -> "Telegram"
+        }
+    }
+
+    /**
+     * Отметить сообщения прочитанными в чате (синхронизация со всеми устройствами аккаунта).
+     */
+    fun viewMessages(chatId: Long, messageIds: LongArray) {
+        if (messageIds.isEmpty()) return
+        send(TdApi.ViewMessages(chatId, messageIds, null, true)) {
+            Log.d(TAG, "viewMessages sent for chat $chatId, ${messageIds.size} messages.")
+        }
+    }
+
     fun logOut(onComplete: () -> Unit = {}) {
         send(TdApi.LogOut()) {
             _currentUser.value = null
             chatsMap.clear()
             _chatsList.value = emptyList()
+            usersMap.clear()
+            filePathsMap.clear()
+            _fileDownloadedState.value = emptyMap()
             onComplete()
         }
     }

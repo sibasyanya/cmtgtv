@@ -1,11 +1,14 @@
 package com.tgmedia.tv.ui.chats
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -33,19 +38,21 @@ import com.tgmedia.tv.ui.proxy.TgTextSecondary
 import com.tgmedia.tv.ui.proxy.TgTextWhite
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
+import java.io.File
 
 data class UiChatItem(
     val id: Long,
     val title: String,
     val lastMessage: String,
     val unreadCount: Int,
-    val isChannel: Boolean
+    val isChannel: Boolean,
+    val avatarPath: String?
 )
 
 /**
  * Преобразование реального TDLib объекта Chat в отображаемый элемент интерфейса ТВ.
  */
-fun TdApi.Chat.toUiChatItem(): UiChatItem {
+fun TdApi.Chat.toUiChatItem(avatarPath: String?): UiChatItem {
     val isChan = when (val t = this.type) {
         is TdApi.ChatTypeSupergroup -> t.isChannel
         else -> false
@@ -69,23 +76,27 @@ fun TdApi.Chat.toUiChatItem(): UiChatItem {
         title = this.title.ifBlank { "Чат ${this.id}" },
         lastMessage = preview,
         unreadCount = this.unreadCount,
-        isChannel = isChan
+        isChannel = isChan,
+        avatarPath = avatarPath
     )
 }
 
 /**
  * 10-Foot UI экран списка каналов и чатов для Android TV с D-Pad навигацией.
- * Отображает реальные чаты аккаунта из TDLib и предоставляет доступ в настройки профиля.
+ * Отображает реальные чаты аккаунта из TDLib, сохраняет позицию скролла при возврате
+ * и загружает реальные аватарки каналов и чатов.
  */
 @Composable
 fun TvChatListScreen(
     onSelectChat: (chatId: Long, title: String) -> Unit,
     onOpenAccountSettings: () -> Unit,
+    listState: LazyListState,
     modifier: Modifier = Modifier
 ) {
     val tdLibManager = remember { TdLibManager.getInstance() }
     val chatsFromTdLib by tdLibManager.chatsList.collectAsState()
     val currentUser by tdLibManager.currentUser.collectAsState()
+    val downloadedFiles by tdLibManager.fileDownloadedState.collectAsState()
     val coroutineScope = rememberCoroutineScope()
 
     var isLoading by remember { mutableStateOf(false) }
@@ -107,8 +118,12 @@ fun TvChatListScreen(
         }
     }
 
-    val displayList = remember(chatsFromTdLib) {
-        chatsFromTdLib.map { it.toUiChatItem() }
+    // Реактивное обновление элементов чатов с путями к скачанным аватаркам
+    val displayList = remember(chatsFromTdLib, downloadedFiles) {
+        chatsFromTdLib.map { chat ->
+            val photoPath = tdLibManager.getChatPhotoPath(chat)
+            chat.toUiChatItem(photoPath)
+        }
     }
 
     Column(
@@ -173,6 +188,9 @@ fun TvChatListScreen(
                 val profileName = currentUser?.firstName?.ifBlank { null }
                     ?: currentUser?.usernames?.activeUsernames?.firstOrNull()
                     ?: "Аккаунт"
+                val userAvatarPath = remember(currentUser, downloadedFiles) {
+                    tdLibManager.getUserPhotoPath(currentUser)
+                }
 
                 var isProfileFocused by remember { mutableStateOf(false) }
                 Button(
@@ -185,12 +203,39 @@ fun TvChatListScreen(
                         .onFocusChanged { isProfileFocused = it.isFocused }
                         .height(42.dp)
                 ) {
-                    Icon(
-                        Icons.Default.AccountCircle,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
+                    if (!userAvatarPath.isNullOrBlank() && File(userAvatarPath).exists()) {
+                        val bitmap = remember(userAvatarPath) {
+                            try {
+                                BitmapFactory.decodeFile(userAvatarPath)?.asImageBitmap()
+                            } catch (_: Exception) {
+                                null
+                            }
+                        }
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.AccountCircle,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    } else {
+                        Icon(
+                            Icons.Default.AccountCircle,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "Профиль ($profileName)",
@@ -249,6 +294,7 @@ fun TvChatListScreen(
             }
         } else {
             LazyColumn(
+                state = listState,
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
@@ -288,21 +334,43 @@ fun ChatRowItem(
             .padding(horizontal = 20.dp, vertical = 14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-            // Аватар с инициалом
-            val firstLetter = chat.title.trim().take(1).uppercase().ifBlank { "#" }
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(46.dp)
-                    .clip(CircleShape)
-                    .background(if (chat.isChannel) TgPrimary else Color(0xFF334155))
-            ) {
-                Text(
-                    text = firstLetter,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
+            // Реальный аватар чата/канала или заглушка с инициалом при отсутствии/скачивании
+            val avatarPath = chat.avatarPath
+            val avatarBitmap = remember(avatarPath) {
+                if (!avatarPath.isNullOrBlank() && File(avatarPath).exists()) {
+                    try {
+                        BitmapFactory.decodeFile(avatarPath)?.asImageBitmap()
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else null
+            }
+
+            if (avatarBitmap != null) {
+                Image(
+                    bitmap = avatarBitmap,
+                    contentDescription = chat.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
                 )
+            } else {
+                val firstLetter = chat.title.trim().take(1).uppercase().ifBlank { "#" }
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(if (chat.isChannel) TgPrimary else Color(0xFF334155))
+                ) {
+                    Text(
+                        text = firstLetter,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(16.dp))

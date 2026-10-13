@@ -1,6 +1,8 @@
 package com.tgmedia.tv.ui.account
 
+import android.graphics.BitmapFactory
 import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,15 +21,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tgmedia.tv.BuildConfig
 import com.tgmedia.tv.data.tdlib.ProxyConnectionMode
 import com.tgmedia.tv.data.tdlib.TdLibManager
 import com.tgmedia.tv.ui.proxy.*
 import org.drinkless.tdlib.TdApi
+import java.io.File
 
 /**
  * Полноценный 10-Foot UI экран управления аккаунтом и профилем для Android TV.
@@ -47,6 +53,7 @@ fun TvAccountSettingsScreen(
     val tdLibManager = remember { TdLibManager.getInstance() }
     val currentUser by tdLibManager.currentUser.collectAsState()
     val proxyConfig by tdLibManager.telegramProxyConfig.collectAsState()
+    val downloadedFiles by tdLibManager.fileDownloadedState.collectAsState()
     val context = LocalContext.current
 
     var showProxyDialog by remember { mutableStateOf(false) }
@@ -112,7 +119,7 @@ fun TvAccountSettingsScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Cybermasters TG TV (CMTGTV) v1.0.25 • Релизный ключ активен",
+                            text = "Cybermasters TG TV (CMTGTV) v${BuildConfig.VERSION_NAME} • Релизный ключ активен",
                             color = TgTextSecondary,
                             fontSize = 13.sp
                         )
@@ -179,21 +186,45 @@ fun TvAccountSettingsScreen(
                             if (it.startsWith("+")) it else "+$it"
                         } ?: "Номер скрыт"
 
-                        // Аватар профиля
-                        val initials = fullName.split(" ").take(2).mapNotNull { it.firstOrNull()?.uppercase() }.joinToString("")
-                        Box(
-                            modifier = Modifier
-                                .size(84.dp)
-                                .clip(CircleShape)
-                                .background(TgPrimary),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = if (initials.isNotBlank()) initials else "TG",
-                                color = Color.White,
-                                fontSize = 32.sp,
-                                fontWeight = FontWeight.Bold
+                        // Реальный аватар профиля
+                        val userAvatarPath = remember(currentUser, downloadedFiles) {
+                            tdLibManager.getUserPhotoPath(currentUser)
+                        }
+                        val avatarBitmap = remember(userAvatarPath) {
+                            if (!userAvatarPath.isNullOrBlank() && File(userAvatarPath).exists()) {
+                                try {
+                                    BitmapFactory.decodeFile(userAvatarPath)?.asImageBitmap()
+                                } catch (_: Exception) {
+                                    null
+                                }
+                            } else null
+                        }
+
+                        if (avatarBitmap != null) {
+                            Image(
+                                bitmap = avatarBitmap,
+                                contentDescription = fullName,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(84.dp)
+                                    .clip(CircleShape)
                             )
+                        } else {
+                            val initials = fullName.split(" ").take(2).mapNotNull { it.firstOrNull()?.uppercase() }.joinToString("")
+                            Box(
+                                modifier = Modifier
+                                    .size(84.dp)
+                                    .clip(CircleShape)
+                                    .background(TgPrimary),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (initials.isNotBlank()) initials else "TG",
+                                    color = Color.White,
+                                    fontSize = 32.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(14.dp))

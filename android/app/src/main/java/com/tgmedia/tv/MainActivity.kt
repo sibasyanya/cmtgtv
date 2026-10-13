@@ -59,6 +59,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val chatListState = androidx.compose.foundation.lazy.rememberLazyListState()
+
             when (val screen = currentScreen) {
                 is TvScreen.Auth -> {
                     QrAuthScreen(
@@ -74,7 +76,8 @@ class MainActivity : ComponentActivity() {
                         },
                         onOpenAccountSettings = {
                             currentScreen = TvScreen.AccountSettings
-                        }
+                        },
+                        listState = chatListState
                     )
                 }
                 is TvScreen.ChatDetail -> {
