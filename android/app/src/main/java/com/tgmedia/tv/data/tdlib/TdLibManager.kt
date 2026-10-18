@@ -1088,18 +1088,18 @@ class TdLibManager private constructor() {
         val chatIds = chatsResult.getOrNull()?.chatIds ?: longArrayOf()
 
         for (id in chatIds) {
-            if (!chatsMap.containsKey(id)) {
-                try {
+            try {
+                if (!chatsMap.containsKey(id)) {
                     val chatRes = execute(TdApi.GetChat(id))
                     chatRes.getOrNull()?.let { chat ->
                         chatsMap[chat.id] = chat
                         downloadChatPhoto(chat)
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to getChat for $id: ${e.message}")
+                } else {
+                    chatsMap[id]?.let { downloadChatPhoto(it) }
                 }
-            } else {
-                chatsMap[id]?.let { downloadChatPhoto(it) }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to getChat for $id: ${e.message}")
             }
         }
         refreshChatsList()
@@ -1139,9 +1139,10 @@ class TdLibManager private constructor() {
     suspend fun getChatHistory(
         chatId: Long,
         fromMessageId: Long = 0,
-        limit: Int = 50
+        offset: Int = 0,
+        limit: Int = 30
     ): Result<List<TdApi.Message>> {
-        val result = execute(TdApi.GetChatHistory(chatId, fromMessageId, 0, limit, false))
+        val result = execute(TdApi.GetChatHistory(chatId, fromMessageId, offset, limit, false))
         return result.map { it.messages.toList() }
     }
 

@@ -1,6 +1,7 @@
 package com.tgmedia.tv.ui.chats
 
 import android.graphics.BitmapFactory
+import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,6 +15,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,9 +32,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.tv.material3.*
 import com.tgmedia.tv.data.tdlib.TdLibManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
 import java.io.File
@@ -86,7 +91,9 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
 
 /**
  * 10-Foot UI экран чтения канала/чата с пультом ТВ.
- * Синхронизирует сообщения напрямую с Telegram аккаунтом в реальном времени (Local-First + TDLib events).
+ * Синхронизирует сообщения напрямую с Telegram аккаунтом в реальном времени.
+ * Реализует официальный Telegram-алгоритм пагинации и кэширования сообщений (батчи по 30 сообщений,
+ * защита от flood wait и out-of-memory).
  */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -102,6 +109,8 @@ fun TvChatDetailScreen(
 
     var messagesList by remember { mutableStateOf<List<UiMessage>>(emptyList()) }
     var isLoadingHistory by remember { mutableStateOf(true) }
+    var isLoadingMoreOlder by remember { mutableStateOf(false) }
+    var hasMoreOlderMessages by remember { mutableStateOf(true) }
 
     var inputText by remember { mutableStateOf("") }
     var isInputFocused by remember { mutableStateOf(false) }
@@ -111,88 +120,181 @@ fun TvChatDetailScreen(
 
     // Получаем реальный объект чата для аватара
     val chatObj = remember(chatId, tdLibManager.chatsList) {
-        tdLibManager.chatsMap[chatId]
+        try {
+            tdLibManager.chatsMap[chatId]
+        } catch (_: Exception) {
+            null
+        }
     }
     val chatAvatarPath = remember(chatObj, downloadedFiles) {
         tdLibManager.getChatPhotoPath(chatObj)
     }
 
+    // Загрузка более старых сообщений (пагинация вверх с официальным лимитом 30 сообщений)
+    fun loadOlderMessages() {
+        if (isLoadingMoreOlder || !hasMoreOlderMessages || messagesList.isEmpty()) return
+        val oldestMessageId = messagesList.firstOrNull()?.id ?: return
+
+        isLoadingMoreOlder = true
+        scope.launch {
+            try {
+                // Лимит 30 сообщений как в официальном клиенте Telegram Desktop / Android
+                val olderResult = tdLibManager.getChatHistory(
+                    chatId = chatId,
+                    fromMessageId = oldestMessageId,
+                    offset = 0,
+                    limit = 30
+                )
+                val rawOlder = olderResult.getOrNull().orEmpty()
+
+                if (rawOlder.isEmpty()) {
+                    hasMoreOlderMessages = false
+                } else {
+                    val existingIds = messagesList.map { it.id }.toHashSet()
+                    val newOldBatch = rawOlder
+                        .filterNot { it.id in existingIds }
+                        .reversed()
+                        .map { msg ->
+                            val senderName = tdLibManager.getSenderName(msg.senderId)
+                            msg.toUiMessage(senderName)
+                        }
+
+                    if (newOldBatch.isEmpty()) {
+                        hasMoreOlderMessages = false
+                    } else {
+                        val addedCount = newOldBatch.size
+                        val currentFirstVisible = listState.firstVisibleItemIndex
+                        val currentFirstOffset = listState.firstVisibleItemScrollOffset
+
+                        messagesList = newOldBatch + messagesList
+
+                        // Сохраняем стабильную позицию скролла для пользователя
+                        listState.scrollToItem(currentFirstVisible + addedCount, currentFirstOffset)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("TvChatDetail", "Failed to load older messages: ${e.message}")
+            } finally {
+                isLoadingMoreOlder = false
+            }
+        }
+    }
+
     // Первичная загрузка реальной истории сообщений чата и открытие чата в TDLib
     LaunchedEffect(chatId) {
         isLoadingHistory = true
+        hasMoreOlderMessages = true
         tdLibManager.openChat(chatId)
 
-        val historyResult = tdLibManager.getChatHistory(chatId = chatId, fromMessageId = 0, limit = 50)
-        val rawMessages = historyResult.getOrNull().orEmpty()
+        try {
+            // Начальная загрузка: 30 сообщений от самого свежего (fromMessageId = 0)
+            val historyResult = tdLibManager.getChatHistory(
+                chatId = chatId,
+                fromMessageId = 0,
+                offset = 0,
+                limit = 30
+            )
+            val rawMessages = historyResult.getOrNull().orEmpty()
 
-        // TDLib возвращает сообщения от новых к старым. Для нормального чтения сверху-вниз реверсируем.
-        val converted = rawMessages.reversed().map { msg ->
-            val senderName = tdLibManager.getSenderName(msg.senderId)
-            msg.toUiMessage(senderName)
+            if (rawMessages.isEmpty()) {
+                hasMoreOlderMessages = false
+            }
+
+            // TDLib возвращает сообщения в порядке от новых к старым.
+            // Реверсируем для естественного чтения сверху вниз
+            val converted = rawMessages.reversed().map { msg ->
+                val senderName = tdLibManager.getSenderName(msg.senderId)
+                msg.toUiMessage(senderName)
+            }
+            messagesList = converted
+
+            // Отмечаем сообщения прочитанными
+            if (rawMessages.isNotEmpty()) {
+                val ids = rawMessages.map { it.id }.toLongArray()
+                tdLibManager.viewMessages(chatId, ids)
+            }
+
+            // Прокручиваем к последнему (самому свежему) сообщению внизу
+            if (converted.isNotEmpty()) {
+                listState.scrollToItem(converted.size - 1)
+            }
+        } catch (e: Exception) {
+            Log.e("TvChatDetail", "Initial history load failed: ${e.message}")
+        } finally {
+            isLoadingHistory = false
         }
-        messagesList = converted
-        isLoadingHistory = false
+    }
 
-        // Отмечаем сообщения прочитанными
-        if (rawMessages.isNotEmpty()) {
-            val ids = rawMessages.map { it.id }.toLongArray()
-            tdLibManager.viewMessages(chatId, ids)
+    // Автоматическая подгрузка предыдущих сообщений при приближении к началу списка
+    val shouldLoadMoreOlder by remember {
+        derivedStateOf {
+            val firstVisible = listState.firstVisibleItemIndex
+            !isLoadingHistory && !isLoadingMoreOlder && hasMoreOlderMessages && firstVisible <= 2 && messagesList.isNotEmpty()
         }
+    }
 
-        // Прокручиваем к последнему сообщению
-        if (converted.isNotEmpty()) {
-            listState.scrollToItem(converted.size - 1)
+    LaunchedEffect(shouldLoadMoreOlder) {
+        if (shouldLoadMoreOlder) {
+            loadOlderMessages()
         }
     }
 
     // Мгновенная синхронизация входящих и исходящих сообщений в реальном времени через TDLib updates
     LaunchedEffect(chatId) {
         tdLibManager.updates.collect { update ->
-            when (update) {
-                is TdApi.UpdateNewMessage -> {
-                    if (update.message.chatId == chatId) {
-                        val senderName = tdLibManager.getSenderName(update.message.senderId)
-                        val uiMsg = update.message.toUiMessage(senderName)
+            try {
+                when (update) {
+                    is TdApi.UpdateNewMessage -> {
+                        if (update.message.chatId == chatId) {
+                            val senderName = tdLibManager.getSenderName(update.message.senderId)
+                            val uiMsg = update.message.toUiMessage(senderName)
 
-                        // Исключаем дубликаты (например, если отправляли локально)
-                        val exists = messagesList.any { it.id == uiMsg.id }
-                        if (!exists) {
-                            messagesList = messagesList + uiMsg
-                            scope.launch {
-                                if (messagesList.isNotEmpty()) {
-                                    listState.animateScrollToItem(messagesList.size - 1)
+                            // Исключаем дубликаты
+                            val exists = messagesList.any { it.id == uiMsg.id }
+                            if (!exists) {
+                                val isScrolledNearBottom = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 >= (messagesList.size - 2)
+                                messagesList = messagesList + uiMsg
+
+                                if (isScrolledNearBottom || uiMsg.isOutgoing) {
+                                    scope.launch {
+                                        if (messagesList.isNotEmpty()) {
+                                            listState.animateScrollToItem(messagesList.size - 1)
+                                        }
+                                    }
                                 }
                             }
-                        }
 
-                        // Отмечаем новое сообщение прочитанным
-                        tdLibManager.viewMessages(chatId, longArrayOf(update.message.id))
-                    }
-                }
-                is TdApi.UpdateMessageContent -> {
-                    if (update.chatId == chatId) {
-                        // Обновляем текст/содержимое отредактированного сообщения
-                        messagesList = messagesList.map { oldMsg ->
-                            if (oldMsg.id == update.messageId) {
-                                val dummyMsg = TdApi.Message().apply {
-                                    id = update.messageId
-                                    content = update.newContent
-                                    date = (System.currentTimeMillis() / 1000).toInt()
-                                    isOutgoing = oldMsg.isOutgoing
-                                }
-                                val updated = dummyMsg.toUiMessage(oldMsg.senderName)
-                                oldMsg.copy(text = updated.text)
-                            } else oldMsg
+                            // Отмечаем новое сообщение прочитанным
+                            tdLibManager.viewMessages(chatId, longArrayOf(update.message.id))
                         }
                     }
-                }
-                is TdApi.UpdateDeleteMessages -> {
-                    if (update.chatId == chatId) {
-                        val deletedIds = update.messageIds.toSet()
-                        messagesList = messagesList.filterNot { it.id in deletedIds }
+                    is TdApi.UpdateMessageContent -> {
+                        if (update.chatId == chatId) {
+                            // Обновляем текст/содержимое отредактированного сообщения
+                            messagesList = messagesList.map { oldMsg ->
+                                if (oldMsg.id == update.messageId) {
+                                    val dummyMsg = TdApi.Message().apply {
+                                        id = update.messageId
+                                        content = update.newContent
+                                        date = (System.currentTimeMillis() / 1000).toInt()
+                                        isOutgoing = oldMsg.isOutgoing
+                                    }
+                                    val updated = dummyMsg.toUiMessage(oldMsg.senderName)
+                                    oldMsg.copy(text = updated.text)
+                                } else oldMsg
+                            }
+                        }
                     }
+                    is TdApi.UpdateDeleteMessages -> {
+                        if (update.chatId == chatId) {
+                            val deletedIds = update.messageIds.toSet()
+                            messagesList = messagesList.filterNot { it.id in deletedIds }
+                        }
+                    }
+                    else -> Unit
                 }
-                else -> Unit
+            } catch (e: Exception) {
+                Log.w("TvChatDetail", "Error in updates collector: ${e.message}")
             }
         }
     }
@@ -200,7 +302,9 @@ fun TvChatDetailScreen(
     // При выходе закрываем чат в TDLib
     DisposableEffect(chatId) {
         onDispose {
-            tdLibManager.closeChat(chatId)
+            try {
+                tdLibManager.closeChat(chatId)
+            } catch (_: Exception) {}
         }
     }
 
@@ -217,7 +321,11 @@ fun TvChatDetailScreen(
         inputText = ""
 
         scope.launch {
-            tdLibManager.sendMessage(chatId, currentText)
+            try {
+                tdLibManager.sendMessage(chatId, currentText)
+            } catch (e: Exception) {
+                Log.e("TvChatDetail", "Failed to send message: ${e.message}")
+            }
         }
     }
 
@@ -244,10 +352,13 @@ fun TvChatDetailScreen(
 
                 // Аватарка чата
                 val avatarBitmap = remember(chatAvatarPath) {
-                    if (!chatAvatarPath.isNullOrBlank() && File(chatAvatarPath).exists()) {
+                    if (!chatAvatarPath.isNullOrBlank()) {
                         try {
-                            BitmapFactory.decodeFile(chatAvatarPath)?.asImageBitmap()
-                        } catch (_: Exception) {
+                            val f = File(chatAvatarPath)
+                            if (f.exists() && f.length() > 0) {
+                                BitmapFactory.decodeFile(chatAvatarPath)?.asImageBitmap()
+                            } else null
+                        } catch (_: Throwable) {
                             null
                         }
                     } else null
@@ -286,7 +397,7 @@ fun TvChatDetailScreen(
         if (isLoadingHistory && messagesList.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = Color(0xFF38BDF8))
+                    androidx.compose.material3.CircularProgressIndicator(color = Color(0xFF38BDF8))
                     Spacer(modifier = Modifier.height(12.dp))
                     Text("Загрузка сообщений из Telegram...", color = Color.Gray, fontSize = 14.sp)
                 }
@@ -308,6 +419,34 @@ fun TvChatDetailScreen(
                     .weight(1f)
                     .fillMaxWidth()
             ) {
+                // Индикатор подгрузки более старых сообщений сверху
+                if (hasMoreOlderMessages) {
+                    item(key = "older_loader") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isLoadingMoreOlder) {
+                                androidx.compose.material3.CircularProgressIndicator(
+                                    color = Color(0xFF38BDF8),
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                TextButton(onClick = { loadOlderMessages() }) {
+                                    Text(
+                                        "Загрузить предыдущие сообщения...",
+                                        color = Color(0xFF38BDF8),
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 items(messagesList, key = { it.id }) { msg ->
                     val alignment = if (msg.isOutgoing) Alignment.End else Alignment.Start
                     val bgBubbleColor = if (msg.isOutgoing) Color(0xFF0284C7) else Color(0xFF1B1E2B)

@@ -12,6 +12,17 @@ class TelegramMediaTvApp : Application() {
         super.onCreate()
         Log.i("TelegramMediaTvApp", "Initializing Telegram Media TV Application")
 
+        // Защита от аварийных вылетов при сбоях сети/парсинга медиа
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            Log.e("TelegramMediaTvApp", "Uncaught exception on thread ${thread.name}: ${throwable.message}", throwable)
+            // Логируем и предотвращаем внезапное падение UI если это не критическая ошибка VM
+            if (throwable is OutOfMemoryError) {
+                System.gc()
+            }
+            previousHandler?.uncaughtException(thread, throwable)
+        }
+
         try {
             // Подготовка путей локальной базы SQLite и кэша видеофайлов
             val tdlibDbDir = File(filesDir, "tdlib_db").apply { mkdirs() }

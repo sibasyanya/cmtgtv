@@ -203,11 +203,14 @@ fun TvChatListScreen(
                         .onFocusChanged { isProfileFocused = it.isFocused }
                         .height(42.dp)
                 ) {
-                    if (!userAvatarPath.isNullOrBlank() && File(userAvatarPath).exists()) {
+                    if (!userAvatarPath.isNullOrBlank()) {
                         val bitmap = remember(userAvatarPath) {
                             try {
-                                BitmapFactory.decodeFile(userAvatarPath)?.asImageBitmap()
-                            } catch (_: Exception) {
+                                val f = File(userAvatarPath)
+                                if (f.exists() && f.length() > 0) {
+                                    BitmapFactory.decodeFile(userAvatarPath)?.asImageBitmap()
+                                } else null
+                            } catch (_: Throwable) {
                                 null
                             }
                         }
@@ -337,10 +340,13 @@ fun ChatRowItem(
             // Реальный аватар чата/канала или заглушка с инициалом при отсутствии/скачивании
             val avatarPath = chat.avatarPath
             val avatarBitmap = remember(avatarPath) {
-                if (!avatarPath.isNullOrBlank() && File(avatarPath).exists()) {
+                if (!avatarPath.isNullOrBlank()) {
                     try {
-                        BitmapFactory.decodeFile(avatarPath)?.asImageBitmap()
-                    } catch (_: Exception) {
+                        val f = File(avatarPath)
+                        if (f.exists() && f.length() > 0) {
+                            BitmapFactory.decodeFile(avatarPath)?.asImageBitmap()
+                        } else null
+                    } catch (_: Throwable) {
                         null
                     }
                 } else null

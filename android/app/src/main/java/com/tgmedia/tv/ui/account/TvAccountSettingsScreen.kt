@@ -191,10 +191,13 @@ fun TvAccountSettingsScreen(
                             tdLibManager.getUserPhotoPath(currentUser)
                         }
                         val avatarBitmap = remember(userAvatarPath) {
-                            if (!userAvatarPath.isNullOrBlank() && File(userAvatarPath).exists()) {
+                            if (!userAvatarPath.isNullOrBlank()) {
                                 try {
-                                    BitmapFactory.decodeFile(userAvatarPath)?.asImageBitmap()
-                                } catch (_: Exception) {
+                                    val f = File(userAvatarPath)
+                                    if (f.exists() && f.length() > 0) {
+                                        BitmapFactory.decodeFile(userAvatarPath)?.asImageBitmap()
+                                    } else null
+                                } catch (_: Throwable) {
                                     null
                                 }
                             } else null
