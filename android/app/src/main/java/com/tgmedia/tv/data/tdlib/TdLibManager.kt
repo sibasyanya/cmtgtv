@@ -1351,9 +1351,9 @@ class TdLibManager private constructor() {
                     memberCount = fullInfo?.memberCount?.takeIf { it > 0 } ?: sg?.memberCount?.takeIf { it > 0 },
                     chatTypeDescription = typeDesc,
                     avatarPath = avatarPath,
-                    isVerified = sg?.isVerified == true,
-                    isScam = sg?.isScam == true,
-                    isFake = sg?.isFake == true
+                    isVerified = sg?.verificationStatus?.isVerified == true,
+                    isScam = sg?.verificationStatus?.isScam == true,
+                    isFake = sg?.verificationStatus?.isFake == true
                 )
             }
             is TdApi.ChatTypeBasicGroup -> {
@@ -1383,9 +1383,9 @@ class TdLibManager private constructor() {
                     memberCount = null,
                     chatTypeDescription = typeDesc,
                     avatarPath = avatarPath,
-                    isVerified = user?.isVerified == true,
-                    isScam = user?.isScam == true,
-                    isFake = user?.isFake == true
+                    isVerified = user?.verificationStatus?.isVerified == true,
+                    isScam = user?.verificationStatus?.isScam == true,
+                    isFake = user?.verificationStatus?.isFake == true
                 )
             }
             is TdApi.ChatTypeSecret -> {

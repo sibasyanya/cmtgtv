@@ -2,6 +2,12 @@
 
 Все важные изменения проекта Cybermasters TG TV (CMTGTV) фиксируются в этом файле.
 
+## [1.0.35] - 2026-10-18
+
+### Исправлено
+- **Исправление сборки свойств верификации TDLib (`TdLibManager.kt`):**
+  - Заменено обращение к несуществующим прямым полям `isVerified`, `isScam`, `isFake` у `Supergroup` и `User` на корректное чтение через объект `verificationStatus` (`sg?.verificationStatus?.isVerified` и `user?.verificationStatus?.isVerified`).
+
 ## [1.0.34] - 2026-10-18
 
 ### Добавлено и улучшено
