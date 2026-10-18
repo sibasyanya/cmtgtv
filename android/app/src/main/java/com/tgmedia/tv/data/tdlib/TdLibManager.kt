@@ -1267,6 +1267,145 @@ class TdLibManager private constructor() {
     }
 
     /**
+     * Проверка разрешения на отправку сообщений в чат (как в официальном клиенте Telegram).
+     * В каналах писать могут только администраторы/создатели с правом canPostMessages.
+     * В группах учитываются chat.permissions.canSendBasicMessages и статус ограничений.
+     * В приватных диалогах отправка разрешена всегда.
+     */
+    suspend fun canSendMessagesInChat(chat: TdApi.Chat?): Boolean {
+        if (chat == null) return false
+        return when (val type = chat.type) {
+            is TdApi.ChatTypePrivate -> true
+            is TdApi.ChatTypeSecret -> true
+            is TdApi.ChatTypeSupergroup -> {
+                val supergroupRes = execute(TdApi.GetSupergroup(type.supergroupId))
+                val supergroup = supergroupRes.getOrNull()
+                if (supergroup != null) {
+                    when (val status = supergroup.status) {
+                        is TdApi.ChatMemberStatusCreator -> true
+                        is TdApi.ChatMemberStatusAdministrator -> {
+                            if (supergroup.isChannel) {
+                                status.rights?.canPostMessages == true
+                            } else {
+                                true
+                            }
+                        }
+                        is TdApi.ChatMemberStatusMember -> {
+                            if (supergroup.isChannel) {
+                                false
+                            } else {
+                                chat.permissions?.canSendBasicMessages == true
+                            }
+                        }
+                        is TdApi.ChatMemberStatusRestricted -> {
+                            status.isMember && status.permissions?.canSendBasicMessages == true
+                        }
+                        else -> false
+                    }
+                } else {
+                    if (type.isChannel) false else (chat.permissions?.canSendBasicMessages == true)
+                }
+            }
+            is TdApi.ChatTypeBasicGroup -> {
+                chat.permissions?.canSendBasicMessages == true
+            }
+            else -> false
+        }
+    }
+
+    /**
+     * Модель подробных данных профиля чата (описание, ссылка, юзернейм, количество участников).
+     */
+    data class ChatProfileDetails(
+        val title: String,
+        val username: String? = null,
+        val inviteLink: String? = null,
+        val description: String? = null,
+        val memberCount: Int? = null,
+        val chatTypeDescription: String,
+        val avatarPath: String? = null,
+        val isVerified: Boolean = false,
+        val isScam: Boolean = false,
+        val isFake: Boolean = false
+    )
+
+    /**
+     * Загрузка полной информации о профиле чата (канала, группы, пользователя или бота).
+     */
+    suspend fun fetchChatProfileDetails(chatId: Long): ChatProfileDetails? {
+        val chat = chatsMap[chatId] ?: execute(TdApi.GetChat(chatId)).getOrNull() ?: return null
+        val avatarPath = getChatPhotoPath(chat)
+
+        return when (val type = chat.type) {
+            is TdApi.ChatTypeSupergroup -> {
+                val sg = execute(TdApi.GetSupergroup(type.supergroupId)).getOrNull()
+                val fullInfo = execute(TdApi.GetSupergroupFullInfo(type.supergroupId)).getOrNull()
+                val primaryUsername = sg?.usernames?.activeUsernames?.firstOrNull()
+                    ?: sg?.usernames?.editableUsername
+                val typeDesc = if (type.isChannel) "Канал" else "Супергруппа"
+                ChatProfileDetails(
+                    title = chat.title,
+                    username = primaryUsername,
+                    inviteLink = fullInfo?.inviteLink?.inviteLink,
+                    description = fullInfo?.description?.ifBlank { null },
+                    memberCount = fullInfo?.memberCount?.takeIf { it > 0 } ?: sg?.memberCount?.takeIf { it > 0 },
+                    chatTypeDescription = typeDesc,
+                    avatarPath = avatarPath,
+                    isVerified = sg?.isVerified == true,
+                    isScam = sg?.isScam == true,
+                    isFake = sg?.isFake == true
+                )
+            }
+            is TdApi.ChatTypeBasicGroup -> {
+                val fullInfo = execute(TdApi.GetBasicGroupFullInfo(type.basicGroupId)).getOrNull()
+                ChatProfileDetails(
+                    title = chat.title,
+                    username = null,
+                    inviteLink = fullInfo?.inviteLink?.inviteLink,
+                    description = fullInfo?.description?.ifBlank { null },
+                    memberCount = fullInfo?.members?.size,
+                    chatTypeDescription = "Группа",
+                    avatarPath = avatarPath
+                )
+            }
+            is TdApi.ChatTypePrivate -> {
+                val user = usersMap[type.userId] ?: execute(TdApi.GetUser(type.userId)).getOrNull()
+                val fullInfo = execute(TdApi.GetUserFullInfo(type.userId)).getOrNull()
+                val uname = user?.usernames?.activeUsernames?.firstOrNull()
+                    ?: user?.usernames?.editableUsername
+                val typeDesc = if (user?.type is TdApi.UserTypeBot) "Бот" else "Личный чат"
+                ChatProfileDetails(
+                    title = chat.title,
+                    username = uname,
+                    inviteLink = null,
+                    description = fullInfo?.bio?.text?.ifBlank { null }
+                        ?: fullInfo?.botInfo?.description?.ifBlank { null },
+                    memberCount = null,
+                    chatTypeDescription = typeDesc,
+                    avatarPath = avatarPath,
+                    isVerified = user?.isVerified == true,
+                    isScam = user?.isScam == true,
+                    isFake = user?.isFake == true
+                )
+            }
+            is TdApi.ChatTypeSecret -> {
+                ChatProfileDetails(
+                    title = chat.title,
+                    chatTypeDescription = "Секретный чат",
+                    avatarPath = avatarPath
+                )
+            }
+            else -> {
+                ChatProfileDetails(
+                    title = chat.title,
+                    chatTypeDescription = "Чат",
+                    avatarPath = avatarPath
+                )
+            }
+        }
+    }
+
+    /**
      * Отметить сообщения прочитанными в чате (синхронизация со всеми устройствами аккаунта).
      */
     fun viewMessages(chatId: Long, messageIds: LongArray) {
