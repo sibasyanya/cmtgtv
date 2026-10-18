@@ -2,6 +2,13 @@
 
 Все важные изменения проекта Cybermasters TG TV (CMTGTV) фиксируются в этом файле.
 
+## [1.0.33] - 2026-10-18
+
+### Исправлено
+- **Устранение неоднозначности перегрузок компонентов (`TvChatDetailScreen.kt`):**
+  - Удален конфликтный wildcard-импорт `androidx.tv.material3.*`, приводивший к ошибке компилятора Kotlin `Overload resolution ambiguity between candidates: fun Text(...)` из-за одновременного присутствия версий `Text` из Compose Material3 и TV Material3.
+  - Экран полностью переведен на стандартные и стабильные компоненты Compose Material3.
+
 ## [1.0.32] - 2026-10-18
 
 ### Добавлено и улучшено

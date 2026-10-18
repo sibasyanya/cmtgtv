@@ -32,7 +32,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.tv.material3.*
 import com.tgmedia.tv.data.tdlib.TdLibManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -95,7 +94,6 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
  * Реализует официальный Telegram-алгоритм пагинации и кэширования сообщений (батчи по 30 сообщений,
  * защита от flood wait и out-of-memory).
  */
-@OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 fun TvChatDetailScreen(
     chatId: Long,
