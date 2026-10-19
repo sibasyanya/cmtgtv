@@ -1156,6 +1156,10 @@ class TdLibManager private constructor() {
         return execute(request)
     }
 
+    suspend fun sendTextMessage(chatId: Long, text: String): Result<TdApi.Message> {
+        return sendMessage(chatId, text)
+    }
+
     fun openChat(chatId: Long) {
         send(TdApi.OpenChat(chatId)) {
             Log.d(TAG, "Chat $chatId opened in TDLib.")
@@ -1383,7 +1387,14 @@ class TdLibManager private constructor() {
         val isVerified: Boolean = false,
         val isScam: Boolean = false,
         val isFake: Boolean = false
-    )
+    ) {
+        val typeDescription: String get() = chatTypeDescription
+    }
+
+    suspend fun getChatProfileDetails(chat: TdApi.Chat?): ChatProfileDetails? {
+        if (chat == null) return null
+        return fetchChatProfileDetails(chat.id)
+    }
 
     /**
      * Загрузка полной информации о профиле чата (канала, группы, пользователя или бота).

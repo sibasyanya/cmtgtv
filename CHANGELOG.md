@@ -2,6 +2,14 @@
 
 Все важные изменения проекта Cybermasters TG TV (CMTGTV) фиксируются в этом файле.
 
+## [1.0.37] - 2026-10-19
+
+### Исправлено
+- **Устранение ошибок компилятора Kotlin (`compileReleaseKotlin`):**
+  - Добавлен отсутствующий явный импорт `androidx.compose.foundation.gestures.scrollBy` в `TvChatDetailScreen.kt` для плавной прокрутки модального окна.
+  - В `TdLibManager.kt` добавлены методы-алиасы `sendTextMessage` и `getChatProfileDetails`, а также свойство `typeDescription` в `ChatProfileDetails`, устранившие ошибки `Unresolved reference`.
+  - В `TvChatListScreen.kt` исправлено указание модификатора `.focusRequester(focusRequester)` и добавлены соответствующие импорты, устранив ошибку `Unresolved reference 'androidx'`.
+
 ## [1.0.36] - 2026-10-19
 
 ### Добавлено и улучшено
