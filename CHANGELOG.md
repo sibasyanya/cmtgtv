@@ -2,6 +2,12 @@
 
 Все важные изменения проекта Cybermasters TG TV (CMTGTV) фиксируются в этом файле.
 
+## [1.0.38] - 2026-10-19
+
+### Исправлено
+- **Восстановление импорта `focusable` (`TvChatDetailScreen.kt`):**
+  - Добавлен отсутствующий импорт `androidx.compose.foundation.focusable`, вызвавший сбой компиляции Kotlin `Unresolved reference 'focusable'` на строке 1378 модального окна.
+
 ## [1.0.37] - 2026-10-19
 
 ### Исправлено
