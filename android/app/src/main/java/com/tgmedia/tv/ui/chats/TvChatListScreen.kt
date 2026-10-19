@@ -91,6 +91,7 @@ fun TvChatListScreen(
     onSelectChat: (chatId: Long, title: String) -> Unit,
     onOpenAccountSettings: () -> Unit,
     listState: LazyListState,
+    lastSelectedChatId: Long? = null,
     modifier: Modifier = Modifier
 ) {
     val tdLibManager = remember { TdLibManager.getInstance() }
@@ -123,6 +124,21 @@ fun TvChatListScreen(
         chatsFromTdLib.map { chat ->
             val photoPath = tdLibManager.getChatPhotoPath(chat)
             chat.toUiChatItem(photoPath)
+        }
+    }
+
+    // Отслеживаем активный ID чата для мгновенного восстановления фокуса и рамки выделения
+    var currentFocusedChatId by remember { mutableStateOf(lastSelectedChatId) }
+
+    // При возврате в ленту чатов автоматически прокручиваем к выбранному чату
+    LaunchedEffect(displayList, lastSelectedChatId) {
+        if (displayList.isNotEmpty() && lastSelectedChatId != null) {
+            val targetIndex = displayList.indexOfFirst { it.id == lastSelectedChatId }
+            if (targetIndex >= 0) {
+                try {
+                    listState.scrollToItem(targetIndex)
+                } catch (_: Exception) {}
+            }
         }
     }
 
@@ -302,8 +318,11 @@ fun TvChatListScreen(
                 modifier = Modifier.fillMaxSize()
             ) {
                 items(displayList, key = { it.id }) { chat ->
+                    val shouldAutoFocus = (chat.id == currentFocusedChatId || (currentFocusedChatId == null && chat.id == displayList.firstOrNull()?.id))
                     ChatRowItem(
                         chat = chat,
+                        isTargetFocused = shouldAutoFocus,
+                        onFocused = { currentFocusedChatId = chat.id },
                         onClick = { onSelectChat(chat.id, chat.title) }
                     )
                 }
@@ -315,25 +334,49 @@ fun TvChatListScreen(
 @Composable
 fun ChatRowItem(
     chat: UiChatItem,
+    isTargetFocused: Boolean = false,
+    onFocused: () -> Unit = {},
     onClick: () -> Unit
 ) {
     var isFocused by remember { mutableStateOf(false) }
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+
+    // Активно восстанавливаем фокус при монтировании элемента
+    LaunchedEffect(isTargetFocused) {
+        if (isTargetFocused) {
+            for (attempt in 1..6) {
+                kotlinx.coroutines.delay(50L * attempt)
+                try {
+                    focusRequester.requestFocus()
+                    break
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    // Рамка выделения гарантированно присутствует и не пропадает при возврате
+    val isVisuallyFocused = isFocused || isTargetFocused
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
         modifier = Modifier
             .fillMaxWidth()
-            .onFocusChanged { isFocused = it.isFocused }
             .clip(RoundedCornerShape(14.dp))
-            .background(if (isFocused) Color(0xFF1E293B) else TgCardBg)
+            .background(if (isVisuallyFocused) Color(0xFF1E293B) else TgCardBg)
             .border(
-                width = if (isFocused) 3.dp else 1.dp,
-                color = if (isFocused) TgAccentCyan else Color(0xFF222B3D),
+                width = if (isVisuallyFocused) 4.dp else 1.dp,
+                color = if (isVisuallyFocused) Color(0xFF38BDF8) else Color(0xFF222B3D),
                 shape = RoundedCornerShape(14.dp)
             )
+            .androidx.compose.ui.focus.focusRequester(focusRequester)
+            .onFocusChanged { state ->
+                isFocused = state.isFocused
+                if (state.isFocused) {
+                    onFocused()
+                }
+            }
             .clickable { onClick() }
-            .focusable()
             .padding(horizontal = 20.dp, vertical = 14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {

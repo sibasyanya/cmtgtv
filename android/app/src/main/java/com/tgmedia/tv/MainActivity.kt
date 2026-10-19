@@ -60,6 +60,7 @@ class MainActivity : ComponentActivity() {
             }
 
             val chatListState = androidx.compose.foundation.lazy.rememberLazyListState()
+            var lastSelectedChatId by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<Long?>(null) }
 
             when (val screen = currentScreen) {
                 is TvScreen.Auth -> {
@@ -72,12 +73,14 @@ class MainActivity : ComponentActivity() {
                 is TvScreen.ChatList -> {
                     TvChatListScreen(
                         onSelectChat = { chatId, title ->
+                            lastSelectedChatId = chatId
                             currentScreen = TvScreen.ChatDetail(chatId, title)
                         },
                         onOpenAccountSettings = {
                             currentScreen = TvScreen.AccountSettings
                         },
-                        listState = chatListState
+                        listState = chatListState,
+                        lastSelectedChatId = lastSelectedChatId
                     )
                 }
                 is TvScreen.ChatDetail -> {

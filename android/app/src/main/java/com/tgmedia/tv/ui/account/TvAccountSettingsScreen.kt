@@ -54,6 +54,7 @@ fun TvAccountSettingsScreen(
     val currentUser by tdLibManager.currentUser.collectAsState()
     val proxyConfig by tdLibManager.telegramProxyConfig.collectAsState()
     val downloadedFiles by tdLibManager.fileDownloadedState.collectAsState()
+    val isMediaAutoDownloadEnabled by tdLibManager.isMediaAutoDownloadEnabled.collectAsState()
     val context = LocalContext.current
 
     var showProxyDialog by remember { mutableStateOf(false) }
@@ -328,7 +329,24 @@ fun TvAccountSettingsScreen(
                             onClick = { showProxyDialog = true }
                         )
 
-                        // 2. Сменить аккаунт / Добавить второй
+                        // 2. Автозагрузка медиа в чатах (фото, видео, стикеры, музыка)
+                        AccountActionButton(
+                            icon = if (isMediaAutoDownloadEnabled) Icons.Default.CheckCircle else Icons.Default.Close,
+                            title = if (isMediaAutoDownloadEnabled) "Автозагрузка медиа: Включена" else "Автозагрузка медиа: Отключена",
+                            subtitle = if (isMediaAutoDownloadEnabled) "Медиафайлы (фото, видео, стикеры, аудио) загружаются автоматически" else "Экономия трафика: медиафайлы не скачиваются в фоне",
+                            accentColor = if (isMediaAutoDownloadEnabled) TgSuccessGreen else Color(0xFFEF5350),
+                            onClick = {
+                                val nextState = !isMediaAutoDownloadEnabled
+                                tdLibManager.setMediaAutoDownloadEnabled(nextState)
+                                Toast.makeText(
+                                    context,
+                                    if (nextState) "Автозагрузка медиа включена" else "Автозагрузка медиа отключена",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        )
+
+                        // 3. Сменить аккаунт / Добавить второй
                         AccountActionButton(
                             icon = Icons.Default.Add,
                             title = "Сменить аккаунт / Добавить профиль",
@@ -343,7 +361,7 @@ fun TvAccountSettingsScreen(
                             }
                         )
 
-                        // 3. Очистить кэш
+                        // 4. Очистить кэш
                         AccountActionButton(
                             icon = Icons.Default.Delete,
                             title = "Очистить кэш базы данных",

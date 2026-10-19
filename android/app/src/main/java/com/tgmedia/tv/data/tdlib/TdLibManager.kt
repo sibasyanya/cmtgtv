@@ -143,6 +143,8 @@ class TdLibManager private constructor() {
      */
     fun initialize(context: Context, config: TdLibConfig) {
         this.appContext = context.applicationContext
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        _isMediaAutoDownloadEnabled.value = prefs.getBoolean("auto_download_media", true)
         _telegramProxyConfig.value = loadSavedProxyConfig()
         initialize(config)
         startAutoSwitchMonitor()
@@ -340,8 +342,7 @@ class TdLibManager private constructor() {
                 val updatedFile = update.file
                 val localPath = updatedFile.local?.path
                 if (!localPath.isNullOrBlank() && updatedFile.local?.isDownloadingCompleted == true) {
-                    filePathsMap[updatedFile.id] = localPath
-                    _fileDownloadedState.value = _fileDownloadedState.value + (updatedFile.id to localPath)
+                    registerDownloadedFile(updatedFile.id, localPath)
                 }
             }
             else -> Unit
@@ -1218,7 +1219,63 @@ class TdLibManager private constructor() {
     }
 
     /**
-     * Скачивание файла через TDLib (аватары, миниатюры фото и т.д.).
+     * Зарегистрировать скачанный файл в локальном кэше и оповестить подписчиков StateFlow.
+     */
+    fun registerDownloadedFile(fileId: Int, path: String) {
+        if (fileId <= 0 || path.isBlank()) return
+        val f = File(path)
+        if (f.exists() && f.length() > 0) {
+            filePathsMap[fileId] = path
+            if (_fileDownloadedState.value[fileId] != path) {
+                _fileDownloadedState.value = _fileDownloadedState.value + (fileId to path)
+            }
+        }
+    }
+
+    /**
+     * Получить локальный путь к файлу, если он уже загружен.
+     */
+    fun getFilePath(fileId: Int?): String? {
+        if (fileId == null || fileId <= 0) return null
+        val cached = filePathsMap[fileId]
+        if (!cached.isNullOrBlank()) {
+            val f = File(cached)
+            if (f.exists() && f.length() > 0) return cached
+        }
+        return null
+    }
+
+    /**
+     * Скачивание медиафайла через TDLib с учетом пользовательской настройки автозагрузки.
+     */
+    fun downloadMediaFile(fileId: Int, priority: Int = 16, force: Boolean = false) {
+        if (fileId <= 0) return
+        val cachedPath = filePathsMap[fileId]
+        if (!cachedPath.isNullOrBlank()) {
+            val f = File(cachedPath)
+            if (f.exists() && f.length() > 0) {
+                return
+            }
+        }
+
+        if (!force && !_isMediaAutoDownloadEnabled.value) {
+            // Если автозагрузка выключена, проверяем локальный кэш TDLib без инициирования сетевой загрузки
+            send(TdApi.GetFile(fileId)) { res ->
+                if (res is TdApi.File) {
+                    val path = res.local?.path
+                    if (!path.isNullOrBlank() && res.local?.isDownloadingCompleted == true) {
+                        registerDownloadedFile(res.id, path)
+                    }
+                }
+            }
+            return
+        }
+
+        downloadFile(fileId, priority)
+    }
+
+    /**
+     * Скачивание файла через TDLib (аватары, миниатюры фото, видео, стикеры).
      */
     fun downloadFile(fileId: Int, priority: Int = 16) {
         if (fileId <= 0) return
@@ -1226,8 +1283,7 @@ class TdLibManager private constructor() {
             if (res is TdApi.File) {
                 val path = res.local?.path
                 if (!path.isNullOrBlank() && res.local?.isDownloadingCompleted == true) {
-                    filePathsMap[res.id] = path
-                    _fileDownloadedState.value = _fileDownloadedState.value + (res.id to path)
+                    registerDownloadedFile(res.id, path)
                 }
             }
         }
@@ -1425,5 +1481,16 @@ class TdLibManager private constructor() {
             _fileDownloadedState.value = emptyMap()
             onComplete()
         }
+    }
+
+    // Настройка автоматической загрузки медиа (фото, видео, стикеры, аудио)
+    private val _isMediaAutoDownloadEnabled = MutableStateFlow<Boolean>(true)
+    val isMediaAutoDownloadEnabled: StateFlow<Boolean> = _isMediaAutoDownloadEnabled.asStateFlow()
+
+    fun setMediaAutoDownloadEnabled(enabled: Boolean) {
+        _isMediaAutoDownloadEnabled.value = enabled
+        appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.edit()
+            ?.putBoolean("auto_download_media", enabled)
+            ?.apply()
     }
 }
