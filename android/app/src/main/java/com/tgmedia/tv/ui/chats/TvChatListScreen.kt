@@ -98,6 +98,9 @@ fun TvChatListScreen(
 ) {
     val tdLibManager = remember { TdLibManager.getInstance() }
     val chatsFromTdLib by tdLibManager.chatsList.collectAsState()
+    val chatFolders by tdLibManager.chatFolders.collectAsState()
+    val archiveCount by tdLibManager.archiveChatsCount.collectAsState()
+    val currentChatListType by tdLibManager.currentChatListType.collectAsState()
     val currentUser by tdLibManager.currentUser.collectAsState()
     val downloadedFiles by tdLibManager.fileDownloadedState.collectAsState()
     val coroutineScope = rememberCoroutineScope()
@@ -108,7 +111,11 @@ fun TvChatListScreen(
         isLoading = true
         coroutineScope.launch {
             tdLibManager.loadCurrentUser()
-            tdLibManager.loadDetailedChats(50)
+            when (val cur = currentChatListType) {
+                is com.tgmedia.tv.data.tdlib.ChatListType.Main -> tdLibManager.loadDetailedChats(TdApi.ChatListMain(), 50)
+                is com.tgmedia.tv.data.tdlib.ChatListType.Archive -> tdLibManager.loadDetailedChats(TdApi.ChatListArchive(), 50)
+                is com.tgmedia.tv.data.tdlib.ChatListType.Folder -> tdLibManager.loadDetailedChats(TdApi.ChatListFolder(cur.folderId), 50)
+            }
             isLoading = false
         }
     }
@@ -148,7 +155,7 @@ fun TvChatListScreen(
         modifier = modifier
             .fillMaxSize()
             .background(TgDarkBg)
-            .padding(horizontal = 48.dp, vertical = 24.dp)
+            .padding(horizontal = 48.dp, vertical = 20.dp)
     ) {
         // Шапка экрана с навигацией
         Row(
@@ -164,8 +171,8 @@ fun TvChatListScreen(
                     color = TgTextWhite
                 )
                 Text(
-                    text = "Навигация стрелками пульта ДУ (Вверх/Вниз), выбор — кнопка ОК",
-                    fontSize = 13.sp,
+                    text = "Навигация стрелками пульта ДУ (Вверх/Вниз/Влево/Вправо), выбор — кнопка ОК",
+                    fontSize = 12.sp,
                     color = TgTextSecondary
                 )
             }
@@ -185,7 +192,7 @@ fun TvChatListScreen(
                     ),
                     modifier = Modifier
                         .onFocusChanged { isRefreshFocused = it.isFocused }
-                        .height(42.dp)
+                        .height(40.dp)
                 ) {
                     Icon(
                         Icons.Default.Refresh,
@@ -197,7 +204,7 @@ fun TvChatListScreen(
                     Text(
                         text = "Обновить",
                         color = if (isRefreshFocused) Color.Black else Color.White,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -219,7 +226,7 @@ fun TvChatListScreen(
                     ),
                     modifier = Modifier
                         .onFocusChanged { isProfileFocused = it.isFocused }
-                        .height(42.dp)
+                        .height(40.dp)
                 ) {
                     if (!userAvatarPath.isNullOrBlank()) {
                         val bitmap = remember(userAvatarPath) {
@@ -261,21 +268,133 @@ fun TvChatListScreen(
                     Text(
                         text = "Профиль ($profileName)",
                         color = Color.White,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Панель вкладок папок и архива (Пункт 3 и 4: Синхронизация с аккаунтом)
+        androidx.compose.foundation.lazy.LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            // Вкладка "Все чаты"
+            item {
+                val isSelected = currentChatListType is com.tgmedia.tv.data.tdlib.ChatListType.Main
+                var isTabFocused by remember { mutableStateOf(false) }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            when {
+                                isTabFocused -> Color(0xFF38BDF8)
+                                isSelected -> Color(0xFF0284C7)
+                                else -> Color(0xFF131722)
+                            }
+                        )
+                        .border(
+                            width = if (isTabFocused) 3.dp else if (isSelected) 2.dp else 1.dp,
+                            color = if (isTabFocused) Color.White else if (isSelected) Color(0xFF38BDF8) else Color(0xFF222B3D),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .onFocusChanged { isTabFocused = it.isFocused }
+                        .clickable {
+                            tdLibManager.selectChatList(com.tgmedia.tv.data.tdlib.ChatListType.Main)
+                        }
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "Все чаты",
+                        color = if (isTabFocused) Color.Black else Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = if (isSelected || isTabFocused) FontWeight.Bold else FontWeight.Medium
+                    )
+                }
+            }
+
+            // Пользовательские папки из Telegram (автоматически синхронизированы)
+            items(chatFolders) { folder ->
+                val isSelected = (currentChatListType as? com.tgmedia.tv.data.tdlib.ChatListType.Folder)?.folderId == folder.id
+                var isTabFocused by remember { mutableStateOf(false) }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            when {
+                                isTabFocused -> Color(0xFF38BDF8)
+                                isSelected -> Color(0xFF0284C7)
+                                else -> Color(0xFF131722)
+                            }
+                        )
+                        .border(
+                            width = if (isTabFocused) 3.dp else if (isSelected) 2.dp else 1.dp,
+                            color = if (isTabFocused) Color.White else if (isSelected) Color(0xFF38BDF8) else Color(0xFF222B3D),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .onFocusChanged { isTabFocused = it.isFocused }
+                        .clickable {
+                            tdLibManager.selectChatList(com.tgmedia.tv.data.tdlib.ChatListType.Folder(folder.id, folder.title))
+                        }
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "📁 ${folder.title}",
+                        color = if (isTabFocused) Color.Black else Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = if (isSelected || isTabFocused) FontWeight.Bold else FontWeight.Medium
+                    )
+                }
+            }
+
+            // Вкладка "Архив" со счетчиком чатов (Пункт 3)
+            item {
+                val isSelected = currentChatListType is com.tgmedia.tv.data.tdlib.ChatListType.Archive
+                var isTabFocused by remember { mutableStateOf(false) }
+                val label = if (archiveCount > 0) "📦 Архив ($archiveCount)" else "📦 Архив"
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            when {
+                                isTabFocused -> Color(0xFF38BDF8)
+                                isSelected -> Color(0xFF0284C7)
+                                else -> Color(0xFF131722)
+                            }
+                        )
+                        .border(
+                            width = if (isTabFocused) 3.dp else if (isSelected) 2.dp else 1.dp,
+                            color = if (isTabFocused) Color.White else if (isSelected) Color(0xFF38BDF8) else Color(0xFF222B3D),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .onFocusChanged { isTabFocused = it.isFocused }
+                        .clickable {
+                            tdLibManager.selectChatList(com.tgmedia.tv.data.tdlib.ChatListType.Archive)
+                        }
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = label,
+                        color = if (isTabFocused) Color.Black else Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = if (isSelected || isTabFocused) FontWeight.Bold else FontWeight.Medium
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
 
         if (isLoading && displayList.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(color = TgAccentCyan)
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text("Загрузка чатов из вашего Telegram аккаунта...", color = TgTextWhite, fontSize = 16.sp)
+                    Text("Синхронизация чатов с вашим Telegram аккаунтом...", color = TgTextWhite, fontSize = 16.sp)
                 }
             }
         } else if (displayList.isEmpty()) {
@@ -289,15 +408,25 @@ fun TvChatListScreen(
                         modifier = Modifier.padding(32.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        val emptyTitle = when (currentChatListType) {
+                            is com.tgmedia.tv.data.tdlib.ChatListType.Archive -> "Архив пуст"
+                            is com.tgmedia.tv.data.tdlib.ChatListType.Folder -> "Папка пуста"
+                            else -> "Чаты не найдены"
+                        }
+                        val emptyDesc = when (currentChatListType) {
+                            is com.tgmedia.tv.data.tdlib.ChatListType.Archive -> "Все диалоги, которые вы архивируете в официальном Telegram на других устройствах, отобразятся здесь."
+                            is com.tgmedia.tv.data.tdlib.ChatListType.Folder -> "В этой папке пока нет добавленных или синхронизированных диалогов."
+                            else -> "В вашем аккаунте пока нет синхронизированных диалогов или TDLib выполняет начальную загрузку каналов."
+                        }
                         Text(
-                            text = "Чаты не найдены",
+                            text = emptyTitle,
                             color = TgTextWhite,
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            text = "В вашем аккаунте пока нет синхронизированных диалогов или TDLib выполняет начальную загрузку каналов.",
+                            text = emptyDesc,
                             color = TgTextSecondary,
                             fontSize = 14.sp,
                             lineHeight = 20.sp
@@ -308,7 +437,7 @@ fun TvChatListScreen(
                             colors = ButtonDefaults.buttonColors(containerColor = TgPrimary),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            Text("Повторить загрузку чатов", color = Color.White)
+                            Text("Повторить загрузку", color = Color.White)
                         }
                     }
                 }

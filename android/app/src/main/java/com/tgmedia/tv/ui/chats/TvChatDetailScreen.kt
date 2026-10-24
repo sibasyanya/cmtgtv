@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.tgmedia.tv.data.tdlib.TdLibManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -870,9 +871,14 @@ fun TvChatDetailScreen(
                         horizontalAlignment = alignment,
                         modifier = Modifier.fillMaxWidth()
                     ) {
+                        val maxBubbleWidth = when (msg.mediaType) {
+                            MessageMediaType.PHOTO, MessageMediaType.VIDEO -> 420.dp
+                            MessageMediaType.STICKER -> 260.dp
+                            else -> 680.dp
+                        }
                         Box(
                             modifier = Modifier
-                                .widthIn(max = 700.dp)
+                                .widthIn(max = maxBubbleWidth)
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(bgBubbleColor)
                                 .border(
@@ -968,20 +974,38 @@ fun TvChatDetailScreen(
                                         if (mediaBitmap != null) {
                                             val imageModifier = when (msg.mediaType) {
                                                 MessageMediaType.STICKER -> Modifier
-                                                    .size(150.dp)
+                                                    .size(140.dp)
                                                     .clip(RoundedCornerShape(12.dp))
                                                 else -> Modifier
                                                     .fillMaxWidth()
-                                                    .heightIn(max = 320.dp)
+                                                    .heightIn(min = 160.dp, max = 240.dp)
                                                     .clip(RoundedCornerShape(12.dp))
                                             }
 
-                                            Image(
-                                                bitmap = mediaBitmap,
-                                                contentDescription = msg.text,
-                                                contentScale = if (msg.mediaType == MessageMediaType.STICKER) ContentScale.Fit else ContentScale.Crop,
-                                                modifier = imageModifier
-                                            )
+                                            Box(modifier = imageModifier) {
+                                                Image(
+                                                    bitmap = mediaBitmap,
+                                                    contentDescription = msg.text,
+                                                    contentScale = if (msg.mediaType == MessageMediaType.STICKER) ContentScale.Fit else ContentScale.Crop,
+                                                    modifier = Modifier.fillMaxSize()
+                                                )
+                                                if (msg.mediaType == MessageMediaType.PHOTO || msg.mediaType == MessageMediaType.VIDEO) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .align(Alignment.BottomEnd)
+                                                            .padding(8.dp)
+                                                            .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(6.dp))
+                                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = if (msg.mediaType == MessageMediaType.PHOTO) "🔍 На весь экран (ОК)" else "▶ Воспроизвести (ОК)",
+                                                            fontSize = 10.sp,
+                                                            color = Color.White,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    }
+                                                }
+                                            }
                                             Spacer(modifier = Modifier.height(8.dp))
                                         } else if (msg.mediaType == MessageMediaType.STICKER) {
                                             // Fallback для анимированных/векторных стикеров (TGS/WebM)
@@ -1257,14 +1281,17 @@ fun TvChatDetailScreen(
             } catch (_: Exception) {}
         }
 
-        Dialog(onDismissRequest = { selectedFullMessage = null }) {
+        Dialog(
+            onDismissRequest = { selectedFullMessage = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
             Card(
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF131722)),
                 modifier = Modifier
-                    .fillMaxWidth(0.92f)
+                    .width(820.dp)
                     .fillMaxHeight(0.85f)
-                    .border(2.dp, Color(0xFF38BDF8), RoundedCornerShape(16.dp))
+                    .border(2.dp, Color(0xFF38BDF8), RoundedCornerShape(18.dp))
             ) {
                 Column(
                     modifier = Modifier
@@ -1277,7 +1304,7 @@ fun TvChatDetailScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column {
                             Text(
                                 text = fullMsg.senderName,
                                 color = Color(0xFF38BDF8),
@@ -1285,7 +1312,7 @@ fun TvChatDetailScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Отправлено: ${fullMsg.time} • Прокрутка D-Pad (Вверх/Вниз) или кнопками",
+                                text = "Отправлено: ${fullMsg.time} • Скролл D-Pad (Вверх/Вниз) или кнопками",
                                 color = Color(0xFF94A3B8),
                                 fontSize = 12.sp
                             )
@@ -1421,59 +1448,66 @@ fun TvChatDetailScreen(
         }
     }
 
-    // Полноэкранный просмотр фото на экране ТВ (Пункт 4)
+    // Полноэкранный просмотр фото на экране ТВ (Пункт 6)
     selectedPhotoPath?.let { photoPath ->
-        Dialog(onDismissRequest = { selectedPhotoPath = null }) {
+        Dialog(
+            onDismissRequest = { selectedPhotoPath = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.96f)),
+                    .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxSize().padding(24.dp)
+                val photoBitmap = remember(photoPath) {
+                    try {
+                        BitmapFactory.decodeFile(photoPath)?.asImageBitmap()
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
+
+                if (photoBitmap != null) {
+                    Image(
+                        bitmap = photoBitmap,
+                        contentDescription = "Фотография",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                // Плавающая кнопка закрытия в правом верхнем углу экрана ТВ
+                var isClosePhotoFocused by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(32.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Button(
+                        onClick = { selectedPhotoPath = null },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isClosePhotoFocused) Color(0xFF38BDF8) else Color(0xCC111827)
+                        ),
+                        modifier = Modifier
+                            .onFocusChanged { isClosePhotoFocused = it.isFocused }
+                            .border(
+                                width = if (isClosePhotoFocused) 3.dp else 1.dp,
+                                color = if (isClosePhotoFocused) Color.White else Color(0x66FFFFFF),
+                                shape = RoundedCornerShape(12.dp)
+                            )
                     ) {
-                        Text("Просмотр фотографии", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        var isClosePhotoFocused by remember { mutableStateOf(false) }
-                        Button(
-                            onClick = { selectedPhotoPath = null },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isClosePhotoFocused) Color(0xFF38BDF8) else Color(0xFF1E293B)
-                            ),
-                            modifier = Modifier
-                                .onFocusChanged { isClosePhotoFocused = it.isFocused }
-                                .border(
-                                    width = if (isClosePhotoFocused) 3.dp else 1.dp,
-                                    color = if (isClosePhotoFocused) Color.White else Color(0xFF334155),
-                                    shape = RoundedCornerShape(10.dp)
-                                )
-                        ) {
-                            Text("Закрыть (ОК)", color = if (isClosePhotoFocused) Color.Black else Color.White)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    val photoBitmap = remember(photoPath) {
-                        try {
-                            BitmapFactory.decodeFile(photoPath)?.asImageBitmap()
-                        } catch (_: Throwable) {
-                            null
-                        }
-                    }
-
-                    if (photoBitmap != null) {
-                        Image(
-                            bitmap = photoBitmap,
-                            contentDescription = "Фотография",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.weight(1f).fillMaxWidth()
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = null,
+                            tint = if (isClosePhotoFocused) Color.Black else Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            "Закрыть (ОК / Назад)",
+                            color = if (isClosePhotoFocused) Color.Black else Color.White,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
@@ -1481,76 +1515,99 @@ fun TvChatDetailScreen(
         }
     }
 
-    // Полноэкранный проигрыватель видеозаписи (Пункт 4)
+    // Полноэкранный проигрыватель видеозаписи (Пункт 6)
     selectedVideoPath?.let { videoPath ->
-        Dialog(onDismissRequest = { selectedVideoPath = null }) {
+        Dialog(
+            onDismissRequest = { selectedVideoPath = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.96f)),
+                    .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxSize().padding(24.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Воспроизведение видео", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        var isCloseVideoFocused by remember { mutableStateOf(false) }
-                        Button(
-                            onClick = { selectedVideoPath = null },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isCloseVideoFocused) Color(0xFF38BDF8) else Color(0xFF1E293B)
-                            ),
-                            modifier = Modifier
-                                .onFocusChanged { isCloseVideoFocused = it.isFocused }
-                                .border(
-                                    width = if (isCloseVideoFocused) 3.dp else 1.dp,
-                                    color = if (isCloseVideoFocused) Color.White else Color(0xFF334155),
-                                    shape = RoundedCornerShape(10.dp)
-                                )
-                        ) {
-                            Text("Закрыть видео (ОК)", color = if (isCloseVideoFocused) Color.Black else Color.White)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    AndroidView(
-                        factory = { ctx ->
-                            VideoView(ctx).apply {
-                                setVideoPath(videoPath)
-                                val mediaController = android.widget.MediaController(ctx)
-                                mediaController.setAnchorView(this)
-                                setMediaController(mediaController)
-                                setOnPreparedListener { mp ->
-                                    mp.isLooping = true
-                                    start()
-                                }
+                AndroidView(
+                    factory = { ctx ->
+                        VideoView(ctx).apply {
+                            setVideoPath(videoPath)
+                            val mediaController = android.widget.MediaController(ctx)
+                            mediaController.setAnchorView(this)
+                            setMediaController(mediaController)
+                            setOnPreparedListener { mp ->
+                                mp.isLooping = true
+                                start()
                             }
-                        },
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                // Плавающая кнопка закрытия видео в правом верхнем углу экрана ТВ
+                var isCloseVideoFocused by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(32.dp)
+                ) {
+                    Button(
+                        onClick = { selectedVideoPath = null },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isCloseVideoFocused) Color(0xFF38BDF8) else Color(0xCC111827)
+                        ),
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                    )
+                            .onFocusChanged { isCloseVideoFocused = it.isFocused }
+                            .border(
+                                width = if (isCloseVideoFocused) 3.dp else 1.dp,
+                                color = if (isCloseVideoFocused) Color.White else Color(0x66FFFFFF),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = null,
+                            tint = if (isCloseVideoFocused) Color.Black else Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            "Закрыть видео (ОК / Назад)",
+                            color = if (isCloseVideoFocused) Color.Black else Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
     }
 
-    // Диалог профиля чата / канала (Пункт 5)
+    // Диалог профиля чата / канала (Пункт 1: Исправление верстки и загрузка аватарок)
     if (showProfileDialog) {
-        Dialog(onDismissRequest = { showProfileDialog = false }) {
+        Dialog(
+            onDismissRequest = { showProfileDialog = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            val resolvedAvatarPath = remember(profileDetails?.avatarPath, chatAvatarPath, downloadedFiles) {
+                profileDetails?.avatarPath ?: chatAvatarPath ?: tdLibManager.getChatPhotoPath(chatObj)
+            }
+            val profileAvatarBitmap = remember(resolvedAvatarPath) {
+                if (!resolvedAvatarPath.isNullOrBlank()) {
+                    try {
+                        val f = File(resolvedAvatarPath)
+                        if (f.exists() && f.length() > 0) {
+                            BitmapFactory.decodeFile(resolvedAvatarPath)?.asImageBitmap()
+                        } else null
+                    } catch (_: Throwable) {
+                        null
+                    }
+                } else null
+            }
+
             Card(
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF111420)),
                 modifier = Modifier
-                    .fillMaxWidth(0.9f)
+                    .width(760.dp)
                     .fillMaxHeight(0.85f)
                     .border(2.dp, Color(0xFF38BDF8), RoundedCornerShape(18.dp))
             ) {
@@ -1559,16 +1616,17 @@ fun TvChatDetailScreen(
                         .fillMaxSize()
                         .padding(28.dp)
                 ) {
+                    // Шапка окна профиля
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Профиль: $chatTitle",
-                            fontSize = 20.sp,
+                            text = "Информация о профиле",
+                            fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color.White
+                            color = Color(0xFF38BDF8)
                         )
 
                         var isCloseDialogFocused by remember { mutableStateOf(false) }
@@ -1608,78 +1666,182 @@ fun TvChatDetailScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxWidth()
-                                .verticalScroll(rememberScrollState())
+                                .verticalScroll(rememberScrollState()),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text(
-                                text = "Тип чата:",
-                                color = Color(0xFF38BDF8),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = details?.typeDescription ?: "Канал или чат",
-                                color = Color.White,
-                                fontSize = 15.sp
-                            )
-
-                            if (!details?.username.isNullOrBlank()) {
-                                Spacer(modifier = Modifier.height(14.dp))
-                                Text(
-                                    text = "Имя пользователя / Ссылка:",
-                                    color = Color(0xFF38BDF8),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
+                            // Центрированный аватар высокого качества (96 dp)
+                            if (profileAvatarBitmap != null) {
+                                Image(
+                                    bitmap = profileAvatarBitmap,
+                                    contentDescription = chatTitle,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(96.dp)
+                                        .clip(CircleShape)
+                                        .border(3.dp, Color(0xFF38BDF8), CircleShape)
                                 )
-                                Text(
-                                    text = "@${details?.username} (https://t.me/${details?.username})",
-                                    color = Color.White,
-                                    fontSize = 15.sp
-                                )
+                            } else {
+                                val firstLetter = chatTitle.trim().take(1).uppercase().ifBlank { "#" }
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(96.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF0284C7))
+                                        .border(3.dp, Color(0xFF38BDF8), CircleShape)
+                                ) {
+                                    Text(
+                                        text = firstLetter,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 38.sp
+                                    )
+                                }
                             }
 
-                            if (!details?.inviteLink.isNullOrBlank()) {
-                                Spacer(modifier = Modifier.height(14.dp))
-                                Text(
-                                    text = "Ссылка-приглашение:",
-                                    color = Color(0xFF38BDF8),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = details?.inviteLink.orEmpty(),
-                                    color = Color.White,
-                                    fontSize = 15.sp
-                                )
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Название чата / канала
+                            Text(
+                                text = chatTitle,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            // Бейджи типа чата и верификации
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .background(Color(0xFF1E293B), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = details?.typeDescription ?: "Канал или чат",
+                                        color = Color(0xFF38BDF8),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                if (details?.isVerified == true) {
+                                    Box(
+                                        modifier = Modifier
+                                            .background(Color(0xFF0369A1), RoundedCornerShape(8.dp))
+                                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "✓ Подтвержден",
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
                             }
 
-                            if (details?.memberCount != null && details.memberCount > 0) {
-                                Spacer(modifier = Modifier.height(14.dp))
-                                Text(
-                                    text = "Количество участников / подписчиков:",
-                                    color = Color(0xFF38BDF8),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "${details.memberCount} чел.",
-                                    color = Color.White,
-                                    fontSize = 15.sp
-                                )
-                            }
+                            Spacer(modifier = Modifier.height(20.dp))
 
-                            Spacer(modifier = Modifier.height(14.dp))
-                            Text(
-                                text = "Описание / Био:",
-                                color = Color(0xFF38BDF8),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = details?.description?.ifBlank { "Описание отсутствует" } ?: "Описание отсутствует",
-                                color = Color.White,
-                                fontSize = 15.sp,
-                                lineHeight = 22.sp
-                            )
+                            // Блоки с деталями профиля
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                if (!details?.username.isNullOrBlank()) {
+                                    Card(
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF181F30)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(14.dp)) {
+                                            Text(
+                                                text = "Имя пользователя / Ссылка:",
+                                                color = Color(0xFF38BDF8),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = "@${details?.username} (https://t.me/${details?.username})",
+                                                color = Color.White,
+                                                fontSize = 14.sp
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (!details?.inviteLink.isNullOrBlank()) {
+                                    Card(
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF181F30)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(14.dp)) {
+                                            Text(
+                                                text = "Ссылка-приглашение:",
+                                                color = Color(0xFF38BDF8),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = details?.inviteLink.orEmpty(),
+                                                color = Color.White,
+                                                fontSize = 14.sp
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (details?.memberCount != null && details.memberCount > 0) {
+                                    Card(
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF181F30)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(14.dp)) {
+                                            Text(
+                                                text = "Количество участников / подписчиков:",
+                                                color = Color(0xFF38BDF8),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = "${details.memberCount} участников",
+                                                color = Color.White,
+                                                fontSize = 14.sp
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Card(
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF181F30)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(14.dp)) {
+                                        Text(
+                                            text = "Описание / О канале:",
+                                            color = Color(0xFF38BDF8),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = details?.description?.ifBlank { "Описание не указано" } ?: "Описание не указано",
+                                            color = Color.White,
+                                            fontSize = 14.sp,
+                                            lineHeight = 22.sp
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

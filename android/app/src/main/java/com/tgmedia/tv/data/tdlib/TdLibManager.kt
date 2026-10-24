@@ -34,6 +34,15 @@ import kotlin.coroutines.resume
 class TdLibResponseException(val code: Int, message: String) : Exception("TDLib Error [$code]: $message")
 
 /**
+ * Тип списка чатов (Основной, Архив или Папка)
+ */
+sealed class ChatListType {
+    object Main : ChatListType()
+    object Archive : ChatListType()
+    data class Folder(val folderId: Int, val title: String) : ChatListType()
+}
+
+/**
  * Реактивный менеджер TDLib для Android TV.
  * Поддерживает авторизацию исключительно по номеру телефона (SMS / код Telegram / 2FA пароль)
  * и полноценную систему управления прокси (MTProto / SOCKS5 / HTTP / WEB)
@@ -69,6 +78,18 @@ class TdLibManager private constructor() {
     val chatsMap = ConcurrentHashMap<Long, TdApi.Chat>()
     private val _chatsList = MutableStateFlow<List<TdApi.Chat>>(emptyList())
     val chatsList: StateFlow<List<TdApi.Chat>> = _chatsList.asStateFlow()
+
+    // Папки чатов Telegram (синхронизация с другими устройствами)
+    private val _chatFolders = MutableStateFlow<List<TdApi.ChatFolderInfo>>(emptyList())
+    val chatFolders: StateFlow<List<TdApi.ChatFolderInfo>> = _chatFolders.asStateFlow()
+
+    // Количество чатов в архиве
+    private val _archiveChatsCount = MutableStateFlow<Int>(0)
+    val archiveChatsCount: StateFlow<Int> = _archiveChatsCount.asStateFlow()
+
+    // Текущий выбранный список/папка чатов
+    private val _currentChatListType = MutableStateFlow<ChatListType>(ChatListType.Main)
+    val currentChatListType: StateFlow<ChatListType> = _currentChatListType.asStateFlow()
 
     // Кэш пользователей для отображения отправителей
     val usersMap = ConcurrentHashMap<Long, TdApi.User>()
@@ -246,7 +267,8 @@ class TdLibManager private constructor() {
                         _lastError.value = null
                         scope.launch {
                             loadCurrentUser()
-                            loadDetailedChats(40)
+                            loadDetailedChats(TdApi.ChatListMain(), 50)
+                            loadDetailedChats(TdApi.ChatListArchive(), 30)
                         }
                     }
                     is TdApi.AuthorizationStateClosed -> {
@@ -310,12 +332,20 @@ class TdLibManager private constructor() {
             }
             is TdApi.UpdateChatPosition -> {
                 chatsMap[update.chatId]?.let { chat ->
-                    val existing = chat.positions?.filter { it.list?.constructor != update.position?.list?.constructor }?.toMutableList() ?: mutableListOf()
+                    val existing = chat.positions?.filter { !isSameChatList(it.list, update.position?.list) }?.toMutableList() ?: mutableListOf()
                     if (update.position != null && update.position.order != 0L) {
                         existing.add(update.position)
                     }
                     chat.positions = existing.toTypedArray()
                     refreshChatsList()
+                }
+            }
+            is TdApi.UpdateChatFolders -> {
+                _chatFolders.value = update.chatFolders.toList()
+                scope.launch {
+                    for (folder in update.chatFolders) {
+                        loadDetailedChats(TdApi.ChatListFolder(folder.id), 30)
+                    }
                 }
             }
             is TdApi.UpdateChatReadInbox -> {
@@ -349,14 +379,72 @@ class TdLibManager private constructor() {
         }
     }
 
-    private fun refreshChatsList() {
-        val sorted = chatsMap.values.toList().sortedWith(
-            compareByDescending { chat ->
-                val primaryOrder = chat.positions?.firstOrNull()?.order ?: 0L
-                if (primaryOrder > 0) primaryOrder else (chat.lastMessage?.date?.toLong() ?: 0L)
+    private fun isSameChatList(a: TdApi.ChatList?, b: TdApi.ChatList?): Boolean {
+        if (a == null || b == null) return a == b
+        if (a.constructor != b.constructor) return false
+        if (a is TdApi.ChatListFolder && b is TdApi.ChatListFolder) {
+            return a.chatFolderId == b.chatFolderId
+        }
+        return true
+    }
+
+    /**
+     * Получить отсортированный список чатов для конкретного типа (Основной, Архив или Папка)
+     * в точности по правилам официального клиента Telegram:
+     * строгая сортировка по position.order (по убыванию), закрепленные чаты первыми.
+     */
+    fun getChatsForList(listType: ChatListType): List<TdApi.Chat> {
+        return chatsMap.values.mapNotNull { chat ->
+            val positions = chat.positions
+            if (positions == null || positions.isEmpty()) {
+                return@mapNotNull if (listType is ChatListType.Main) {
+                    Pair(chat, chat.lastMessage?.date?.toLong() ?: 0L)
+                } else null
             }
-        )
-        _chatsList.value = sorted
+
+            val matchingPos = positions.firstOrNull { pos ->
+                when (listType) {
+                    is ChatListType.Main -> pos.list is TdApi.ChatListMain && pos.order != 0L
+                    is ChatListType.Archive -> pos.list is TdApi.ChatListArchive && pos.order != 0L
+                    is ChatListType.Folder -> (pos.list as? TdApi.ChatListFolder)?.chatFolderId == listType.folderId && pos.order != 0L
+                }
+            }
+
+            if (matchingPos != null) {
+                Pair(chat, matchingPos.order)
+            } else if (listType is ChatListType.Main) {
+                val isArchived = positions.any { it.list is TdApi.ChatListArchive && it.order != 0L }
+                val isExplicitlyRemovedFromMain = positions.any { it.list is TdApi.ChatListMain && it.order == 0L }
+                if (!isArchived && !isExplicitlyRemovedFromMain && positions.none { it.list is TdApi.ChatListMain }) {
+                    Pair(chat, chat.lastMessage?.date?.toLong() ?: 0L)
+                } else null
+            } else null
+        }
+        .sortedByDescending { it.second }
+        .map { it.first }
+    }
+
+    /**
+     * Переключение активного списка/папки чатов
+     */
+    fun selectChatList(type: ChatListType) {
+        _currentChatListType.value = type
+        refreshChatsList()
+        scope.launch {
+            when (type) {
+                is ChatListType.Main -> loadDetailedChats(TdApi.ChatListMain(), 50)
+                is ChatListType.Archive -> loadDetailedChats(TdApi.ChatListArchive(), 50)
+                is ChatListType.Folder -> loadDetailedChats(TdApi.ChatListFolder(type.folderId), 50)
+            }
+        }
+    }
+
+    private fun refreshChatsList() {
+        val archCount = chatsMap.values.count { chat ->
+            chat.positions?.any { it.list is TdApi.ChatListArchive && it.order != 0L } == true
+        }
+        _archiveChatsCount.value = archCount
+        _chatsList.value = getChatsForList(_currentChatListType.value)
     }
 
     /**
@@ -1077,15 +1165,15 @@ class TdLibManager private constructor() {
     /**
      * Загрузка реальных чатов с полными названиями, сообщениями и аватарками.
      */
-    suspend fun loadDetailedChats(limit: Int = 40): Result<List<TdApi.Chat>> {
+    suspend fun loadDetailedChats(chatList: TdApi.ChatList? = null, limit: Int = 50): Result<List<TdApi.Chat>> {
         if (!isNativeLibraryLoaded || client == null) {
             return Result.success(emptyList())
         }
         try {
-            execute(TdApi.LoadChats(null, limit))
+            execute(TdApi.LoadChats(chatList, limit))
         } catch (_: Exception) {}
 
-        val chatsResult = execute(TdApi.GetChats(null, limit))
+        val chatsResult = execute(TdApi.GetChats(chatList, limit))
         val chatIds = chatsResult.getOrNull()?.chatIds ?: longArrayOf()
 
         for (id in chatIds) {
@@ -1105,6 +1193,10 @@ class TdLibManager private constructor() {
         }
         refreshChatsList()
         return Result.success(_chatsList.value)
+    }
+
+    suspend fun loadDetailedChats(limit: Int): Result<List<TdApi.Chat>> {
+        return loadDetailedChats(null, limit)
     }
 
     /**
@@ -1173,35 +1265,61 @@ class TdLibManager private constructor() {
     }
 
     /**
-     * Загрузка аватара чата через TDLib.
+     * Загрузка аватара чата через TDLib (загружаем и миниатюру, и полноразмерное фото).
      */
     fun downloadChatPhoto(chat: TdApi.Chat) {
-        val file = chat.photo?.small ?: chat.photo?.big ?: return
-        downloadFile(file.id, priority = 16)
+        val small = chat.photo?.small
+        if (small != null) {
+            downloadFile(small.id, priority = 16)
+        }
+        val big = chat.photo?.big
+        if (big != null) {
+            downloadFile(big.id, priority = 10)
+        }
     }
 
     /**
      * Загрузка аватара пользователя через TDLib.
      */
     fun downloadUserPhoto(user: TdApi.User) {
-        val file = user.profilePhoto?.small ?: user.profilePhoto?.big ?: return
-        downloadFile(file.id, priority = 16)
+        val small = user.profilePhoto?.small
+        if (small != null) {
+            downloadFile(small.id, priority = 16)
+        }
+        val big = user.profilePhoto?.big
+        if (big != null) {
+            downloadFile(big.id, priority = 10)
+        }
     }
 
     /**
      * Получить локальный файл аватара чата (если уже скачан).
+     * Приоритетно возвращает полноразмерный аватар высокого разрешения.
      */
     fun getChatPhotoPath(chat: TdApi.Chat?): String? {
         if (chat == null) return null
-        val file = chat.photo?.small ?: chat.photo?.big ?: return null
-        val cached = filePathsMap[file.id]
-        if (!cached.isNullOrBlank()) return cached
-        val local = file.local?.path
-        if (!local.isNullOrBlank()) {
-            filePathsMap[file.id] = local
-            return local
+        val big = chat.photo?.big
+        if (big != null) {
+            val cached = filePathsMap[big.id]
+            if (!cached.isNullOrBlank() && File(cached).exists()) return cached
+            val local = big.local?.path
+            if (!local.isNullOrBlank() && File(local).exists()) {
+                filePathsMap[big.id] = local
+                return local
+            }
+            downloadFile(big.id, priority = 20)
         }
-        downloadFile(file.id, priority = 16)
+        val small = chat.photo?.small
+        if (small != null) {
+            val cached = filePathsMap[small.id]
+            if (!cached.isNullOrBlank() && File(cached).exists()) return cached
+            val local = small.local?.path
+            if (!local.isNullOrBlank() && File(local).exists()) {
+                filePathsMap[small.id] = local
+                return local
+            }
+            downloadFile(small.id, priority = 16)
+        }
         return null
     }
 
