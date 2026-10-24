@@ -2,6 +2,13 @@
 
 Все важные изменения проекта Cybermasters TG TV (CMTGTV) фиксируются в этом файле.
 
+## [1.0.40] - 2026-10-24
+
+### Исправлено
+- **Устранение ошибки компиляции `compileReleaseKotlin` в GitHub Actions (`TvChatListScreen.kt`):**
+  - Заменено неразрешенное обращение `folder.title` на `folder.name?.text?.text` согласно официальной сигнатуре TDLib Java SDK (`TdApi.ChatFolderInfo.name: TdApi.ChatFolderName -> text: TdApi.FormattedText -> text: String`).
+  - Добавлена безопасная обработка отсутствующих названий папок с fallback на `"Папка"`.
+
 ## [1.0.39] - 2026-10-24
 
 ### Добавлено и исправлено

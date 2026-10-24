@@ -341,9 +341,10 @@ class TdLibManager private constructor() {
                 }
             }
             is TdApi.UpdateChatFolders -> {
-                _chatFolders.value = update.chatFolders.toList()
+                val folders = update.chatFolders?.toList() ?: emptyList()
+                _chatFolders.value = folders
                 scope.launch {
-                    for (folder in update.chatFolders) {
+                    for (folder in folders) {
                         loadDetailedChats(TdApi.ChatListFolder(folder.id), 30)
                     }
                 }

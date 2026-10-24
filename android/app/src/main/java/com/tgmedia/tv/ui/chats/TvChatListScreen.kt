@@ -319,6 +319,7 @@ fun TvChatListScreen(
 
             // Пользовательские папки из Telegram (автоматически синхронизированы)
             items(chatFolders) { folder ->
+                val folderName = folder.name?.text?.text?.ifBlank { "Папка" } ?: "Папка"
                 val isSelected = (currentChatListType as? com.tgmedia.tv.data.tdlib.ChatListType.Folder)?.folderId == folder.id
                 var isTabFocused by remember { mutableStateOf(false) }
                 Box(
@@ -338,12 +339,12 @@ fun TvChatListScreen(
                         )
                         .onFocusChanged { isTabFocused = it.isFocused }
                         .clickable {
-                            tdLibManager.selectChatList(com.tgmedia.tv.data.tdlib.ChatListType.Folder(folder.id, folder.title))
+                            tdLibManager.selectChatList(com.tgmedia.tv.data.tdlib.ChatListType.Folder(folder.id, folderName))
                         }
                         .padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Text(
-                        text = "📁 ${folder.title}",
+                        text = "📁 $folderName",
                         color = if (isTabFocused) Color.Black else Color.White,
                         fontSize = 13.sp,
                         fontWeight = if (isSelected || isTabFocused) FontWeight.Bold else FontWeight.Medium
