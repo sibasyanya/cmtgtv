@@ -12,11 +12,15 @@ android {
         applicationId = "com.tgmedia.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 44
-        versionName = "1.0.43"
+        versionCode = 45
+        versionName = "1.0.44"
 
-        val tgApiId = System.getenv("TG_API_ID") ?: "279933"
-        val tgApiHash = System.getenv("TG_API_HASH") ?: "1c32273df61c79fc3568bceb0bfb73a9"
+        val envApiId = System.getenv("TG_API_ID")?.trim()
+        val tgApiId = if (!envApiId.isNullOrEmpty() && envApiId.toIntOrNull() != null) envApiId else "279933"
+
+        val envApiHash = System.getenv("TG_API_HASH")?.trim()
+        val tgApiHash = if (!envApiHash.isNullOrEmpty()) envApiHash else "1c32273df61c79fc3568bceb0bfb73a9"
+
         buildConfigField("int", "TG_API_ID", tgApiId)
         buildConfigField("String", "TG_API_HASH", "\"$tgApiHash\"")
 
@@ -28,11 +32,14 @@ android {
 
     signingConfigs {
         create("release") {
-            val envStoreFile = System.getenv("KEYSTORE_FILE")
+            val envStoreFile = System.getenv("KEYSTORE_FILE")?.trim()
             storeFile = if (!envStoreFile.isNullOrEmpty()) file(envStoreFile) else file("release.keystore")
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "cybermasters2026"
-            keyAlias = System.getenv("KEY_ALIAS") ?: "cmtgtv"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: "cybermasters2026"
+            val envStorePass = System.getenv("KEYSTORE_PASSWORD")?.trim()
+            storePassword = if (!envStorePass.isNullOrEmpty()) envStorePass else "cybermasters2026"
+            val envKeyAlias = System.getenv("KEY_ALIAS")?.trim()
+            keyAlias = if (!envKeyAlias.isNullOrEmpty()) envKeyAlias else "cmtgtv"
+            val envKeyPass = System.getenv("KEY_PASSWORD")?.trim()
+            keyPassword = if (!envKeyPass.isNullOrEmpty()) envKeyPass else "cybermasters2026"
         }
     }
 
