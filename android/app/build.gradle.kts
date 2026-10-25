@@ -12,8 +12,13 @@ android {
         applicationId = "com.tgmedia.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 43
-        versionName = "1.0.42"
+        versionCode = 44
+        versionName = "1.0.43"
+
+        val tgApiId = System.getenv("TG_API_ID") ?: "279933"
+        val tgApiHash = System.getenv("TG_API_HASH") ?: "1c32273df61c79fc3568bceb0bfb73a9"
+        buildConfigField("int", "TG_API_ID", tgApiId)
+        buildConfigField("String", "TG_API_HASH", "\"$tgApiHash\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -23,10 +28,11 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = file("release.keystore")
-            storePassword = "cybermasters2026"
-            keyAlias = "cmtgtv"
-            keyPassword = "cybermasters2026"
+            val envStoreFile = System.getenv("KEYSTORE_FILE")
+            storeFile = if (!envStoreFile.isNullOrEmpty()) file(envStoreFile) else file("release.keystore")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "cybermasters2026"
+            keyAlias = System.getenv("KEY_ALIAS") ?: "cmtgtv"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "cybermasters2026"
         }
     }
 

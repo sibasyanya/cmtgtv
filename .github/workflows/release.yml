@@ -77,12 +77,31 @@ jobs:
           unzip -q -o /tmp/td_x86_64.zip -d /tmp/td_x86_64
           cp /tmp/td_x86_64/libs/x86_64/libtdjni.so android/app/src/main/jniLibs/x86_64/
 
-          echo "Verification of installed libtdjni.so libraries:"
+          echo "Verification of installed libtdjni.so libraries and ELF headers:"
+          for arch in armeabi-v7a arm64-v8a x86 x86_64; do
+            so_file="android/app/src/main/jniLibs/$arch/libtdjni.so"
+            if [ ! -s "$so_file" ]; then
+              echo "Integrity Error: $so_file is missing or empty!"
+              exit 1
+            fi
+            # Check 4-byte ELF magic header (\x7fELF)
+            MAGIC=$(head -c 4 "$so_file")
+            if [ "$MAGIC" != "$(printf '\x7fELF')" ]; then
+              echo "Security Error: $so_file failed ELF magic header verification!"
+              exit 1
+            fi
+            echo "✓ $arch libtdjni.so verified (valid ELF binary)"
+          done
           ls -lh android/app/src/main/jniLibs/*/*.so
 
       - name: Build Android Release APK
         env:
           GRADLE_OPTS: "-Xmx3072m -XX:+UseParallelGC -Dorg.gradle.workers.max=2 -Dkotlin.daemon.jvmargs=-Xmx1536m"
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
         run: |
           cd android
           gradle wrapper --gradle-version 8.10.2 || true

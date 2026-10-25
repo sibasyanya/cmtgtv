@@ -122,9 +122,30 @@ class AppUpdateManager(private val context: Context) {
     }
 
     /**
-     * Запуск экрана установки APK пакета.
+     * Запуск экрана установки APK пакета с предварительной проверкой целостности и пакета.
      */
     private fun installApk(file: File) {
+        if (!file.exists() || file.length() == 0L) {
+            android.util.Log.e("AppUpdateManager", "APK file is missing or empty")
+            return
+        }
+
+        // Проверка корректности APK архива и соответствия имени пакета перед установкой
+        try {
+            val archiveInfo = context.packageManager.getPackageArchiveInfo(file.absolutePath, 0)
+            if (archiveInfo == null) {
+                android.util.Log.e("AppUpdateManager", "Security validation failed: downloaded file is not a valid APK package")
+                return
+            }
+            if (archiveInfo.packageName != context.packageName) {
+                android.util.Log.e("AppUpdateManager", "Security validation failed: Package name mismatch! Expected: ${context.packageName}, got: ${archiveInfo.packageName}")
+                return
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("AppUpdateManager", "Error verifying package archive info", e)
+            return
+        }
+
         val apkUri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",

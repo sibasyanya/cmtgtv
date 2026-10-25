@@ -500,7 +500,8 @@ class TdLibManager private constructor() {
         val trimmed = phoneNumber.trim().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
         val formatted = if (trimmed.startsWith("+")) trimmed else "+$trimmed"
 
-        Log.i(TAG, "Sending phone number: $formatted")
+        val maskedPhone = if (formatted.length > 5) formatted.take(4) + "***" + formatted.takeLast(2) else "***"
+        Log.i(TAG, "Sending phone number: $maskedPhone")
         _lastError.value = null
         updateNetworkType()
 
@@ -547,7 +548,7 @@ class TdLibManager private constructor() {
      */
     fun checkAuthenticationCode(code: String, onResult: (Boolean, String?) -> Unit) {
         val trimmed = code.trim().replace(" ", "")
-        Log.i(TAG, "Checking auth code: $trimmed")
+        Log.i(TAG, "Checking auth code: [PROTECTED]")
         _lastError.value = null
 
         val activeClient = client

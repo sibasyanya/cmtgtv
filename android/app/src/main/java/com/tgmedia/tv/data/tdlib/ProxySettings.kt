@@ -144,7 +144,7 @@ data class TelegramProxyItem(
             put("port", port)
             put("secret", secret)
             put("username", username)
-            put("password", password)
+            put("password", obfuscatePassword(password))
             put("status", status.name)
             if (pingMs != null) put("pingMs", pingMs)
             if (tdlibProxyId != null) put("tdlibProxyId", tdlibProxyId)
@@ -153,6 +153,29 @@ data class TelegramProxyItem(
     }
 
     companion object {
+        private const val OBFUSCATION_PREFIX = "enc:"
+
+        private fun obfuscatePassword(pwd: String): String {
+            if (pwd.isEmpty()) return ""
+            val salt = 0x5A.toByte()
+            val bytes = pwd.toByteArray(Charsets.UTF_8).map { (it.toInt() xor salt.toInt()).toByte() }.toByteArray()
+            return OBFUSCATION_PREFIX + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        }
+
+        private fun deobfuscatePassword(raw: String): String {
+            if (raw.isEmpty()) return ""
+            if (!raw.startsWith(OBFUSCATION_PREFIX)) return raw
+            return try {
+                val b64 = raw.removePrefix(OBFUSCATION_PREFIX)
+                val decoded = Base64.decode(b64, Base64.NO_WRAP)
+                val salt = 0x5A.toByte()
+                val plain = decoded.map { (it.toInt() xor salt.toInt()).toByte() }.toByteArray()
+                String(plain, Charsets.UTF_8)
+            } catch (_: Exception) {
+                raw
+            }
+        }
+
         fun fromJson(json: JSONObject): TelegramProxyItem {
             val typeStr = json.optString("type", ProxyItemType.MTPROTO.name)
             val type = try {
@@ -168,6 +191,9 @@ data class TelegramProxyItem(
                 ProxyStatus.CHECKING
             }
 
+            val rawPassword = json.optString("password", "")
+            val parsedPassword = deobfuscatePassword(rawPassword)
+
             return TelegramProxyItem(
                 id = json.optString("id", UUID.randomUUID().toString()),
                 type = type,
@@ -175,7 +201,7 @@ data class TelegramProxyItem(
                 port = json.optInt("port", 443),
                 secret = json.optString("secret", ""),
                 username = json.optString("username", ""),
-                password = json.optString("password", ""),
+                password = parsedPassword,
                 status = status,
                 pingMs = if (json.has("pingMs")) json.optLong("pingMs") else null,
                 tdlibProxyId = if (json.has("tdlibProxyId")) json.optInt("tdlibProxyId") else null,
