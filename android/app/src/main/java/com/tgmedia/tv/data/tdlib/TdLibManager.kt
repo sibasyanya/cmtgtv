@@ -1240,17 +1240,44 @@ class TdLibManager private constructor() {
         return result.map { it.messages.toList() }
     }
 
-    suspend fun sendMessage(chatId: Long, text: String): Result<TdApi.Message> {
+    suspend fun sendMessage(chatId: Long, text: String, replyToMessageId: Long? = null): Result<TdApi.Message> {
         val content = TdApi.InputMessageText(TdApi.FormattedText(text, null), null, true)
         val request = TdApi.SendMessage().apply {
             this.chatId = chatId
             this.inputMessageContent = content
+            if (replyToMessageId != null && replyToMessageId != 0L) {
+                this.replyTo = TdApi.InputMessageReplyToMessage().apply {
+                    this.messageId = replyToMessageId
+                }
+            }
         }
         return execute(request)
     }
 
-    suspend fun sendTextMessage(chatId: Long, text: String): Result<TdApi.Message> {
-        return sendMessage(chatId, text)
+    suspend fun sendTextMessage(chatId: Long, text: String, replyToMessageId: Long? = null): Result<TdApi.Message> {
+        return sendMessage(chatId, text, replyToMessageId)
+    }
+
+    /**
+     * Удаление сообщений из чата (revoke = true удаляет для всех, если разрешено Telegram).
+     */
+    suspend fun deleteMessages(chatId: Long, messageIds: LongArray, revoke: Boolean = true): Result<Unit> {
+        val request = TdApi.DeleteMessages(chatId, messageIds, revoke)
+        val res = execute(request)
+        return res.map { }
+    }
+
+    /**
+     * Пересылка сообщений в другой чат.
+     */
+    suspend fun forwardMessages(
+        fromChatId: Long,
+        toChatId: Long,
+        messageIds: LongArray,
+        sendCopy: Boolean = false
+    ): Result<TdApi.Messages> {
+        val request = TdApi.ForwardMessages(toChatId, null, fromChatId, messageIds, null, sendCopy, false)
+        return execute(request)
     }
 
     fun openChat(chatId: Long) {

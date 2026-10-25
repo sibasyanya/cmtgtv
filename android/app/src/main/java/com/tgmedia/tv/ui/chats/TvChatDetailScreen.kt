@@ -3,7 +3,6 @@ package com.tgmedia.tv.ui.chats
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.util.Log
-import android.widget.VideoView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -27,6 +26,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -36,15 +36,22 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import com.tgmedia.tv.data.tdlib.TdLibManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -217,6 +224,16 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
             targetFullFileId = c.animation.animation.id
             if (c.caption.text.isNotBlank()) "GIF: ${c.caption.text}" else "GIF анимация"
         }
+        is TdApi.MessageVideoNote -> {
+            mType = MessageMediaType.VIDEO
+            targetFileId = c.videoNote.thumbnail?.file?.id ?: c.videoNote.video.id
+            targetFullFileId = c.videoNote.video.id
+            val durationSec = c.videoNote.duration
+            val mins = durationSec / 60
+            val secs = durationSec % 60
+            mInfo = String.format("%02d:%02d", mins, secs)
+            "📹 Видеосообщение ($mInfo)"
+        }
         is TdApi.MessageContact -> "Контакт: ${c.contact.firstName} ${c.contact.lastName}"
         is TdApi.MessageLocation -> "Геолокация"
         is TdApi.MessagePoll -> "Опрос: ${c.poll.question}"
@@ -278,11 +295,18 @@ fun TvChatDetailScreen(
     // Просмотр длинного сообщения
     var selectedFullMessage by remember { mutableStateOf<UiMessage?>(null) }
 
-    // Просмотр фото на весь экран ТВ
-    var selectedPhotoPath by remember { mutableStateOf<String?>(null) }
+    // Просмотр фото на весь экран ТВ в оригинальном качестве
+    var selectedPhotoMessage by remember { mutableStateOf<UiMessage?>(null) }
 
-    // Просмотр/воспроизведение видео
-    var selectedVideoPath by remember { mutableStateOf<String?>(null) }
+    // Просмотр/воспроизведение видео через ExoPlayer
+    var selectedVideoMessage by remember { mutableStateOf<UiMessage?>(null) }
+
+    // Меню действий с сообщением (Ответить, Переслать, Удалить)
+    var actionTargetMessage by remember { mutableStateOf<UiMessage?>(null) }
+    var replyingToMessage by remember { mutableStateOf<UiMessage?>(null) }
+    var forwardingMessage by remember { mutableStateOf<UiMessage?>(null) }
+    var deletingMessage by remember { mutableStateOf<UiMessage?>(null) }
+    var toastNotification by remember { mutableStateOf<String?>(null) }
 
     // Воспроизведение аудио/голосовых сообщений
     var playingAudioMsgId by remember { mutableStateOf<Long?>(null) }
@@ -298,15 +322,21 @@ fun TvChatDetailScreen(
     }
 
     // Перехват кнопки НАЗАД на пульте ДУ: закрывает активные диалоги перед выходом из экрана
-    BackHandler(enabled = selectedPhotoPath != null || selectedVideoPath != null || selectedFullMessage != null || showProfileDialog) {
-        if (selectedPhotoPath != null) {
-            selectedPhotoPath = null
-        } else if (selectedVideoPath != null) {
-            selectedVideoPath = null
-        } else if (selectedFullMessage != null) {
-            selectedFullMessage = null
-        } else if (showProfileDialog) {
-            showProfileDialog = false
+    BackHandler(
+        enabled = selectedPhotoMessage != null || selectedVideoMessage != null ||
+                selectedFullMessage != null || showProfileDialog ||
+                actionTargetMessage != null || forwardingMessage != null ||
+                deletingMessage != null || replyingToMessage != null
+    ) {
+        when {
+            selectedPhotoMessage != null -> selectedPhotoMessage = null
+            selectedVideoMessage != null -> selectedVideoMessage = null
+            selectedFullMessage != null -> selectedFullMessage = null
+            actionTargetMessage != null -> actionTargetMessage = null
+            forwardingMessage != null -> forwardingMessage = null
+            deletingMessage != null -> deletingMessage = null
+            showProfileDialog -> showProfileDialog = false
+            replyingToMessage != null -> replyingToMessage = null
         }
     }
 
@@ -512,15 +542,17 @@ fun TvChatDetailScreen(
         }
     }
 
-    // Отправка сообщений
+    // Отправка сообщений (с поддержкой ответа на выбранное сообщение)
     fun sendMessage(textToSend: String) {
         val trimmed = textToSend.trim()
         if (trimmed.isEmpty()) return
 
+        val replyMsgId = replyingToMessage?.id
         scope.launch {
-            val result = tdLibManager.sendTextMessage(chatId, trimmed)
+            val result = tdLibManager.sendTextMessage(chatId, trimmed, replyToMessageId = replyMsgId)
             if (result.isSuccess) {
                 inputText = ""
+                replyingToMessage = null
                 isInputEditing = false
                 keyboardController?.hide()
             }
@@ -888,35 +920,14 @@ fun TvChatDetailScreen(
                                 )
                                 .onFocusChanged { isMsgFocused = it.isFocused }
                                 .clickable {
-                                    when (msg.mediaType) {
-                                        MessageMediaType.PHOTO -> {
-                                            val pathToView = fullMediaLocalPath ?: mediaLocalPath
-                                            if (!pathToView.isNullOrBlank()) {
-                                                selectedPhotoPath = pathToView
-                                            } else {
-                                                msg.fullFileId?.let { fid -> tdLibManager.downloadMediaFile(fid, force = true) }
-                                                msg.fileId?.let { fid -> tdLibManager.downloadMediaFile(fid, force = true) }
-                                                selectedFullMessage = msg
-                                            }
+                                    if (msg.mediaType == MessageMediaType.AUDIO || msg.mediaType == MessageMediaType.VOICE) {
+                                        if (!mediaLocalPath.isNullOrBlank()) {
+                                            togglePlayAudio(msg.id, mediaLocalPath)
+                                        } else {
+                                            msg.fileId?.let { fid -> tdLibManager.downloadMediaFile(fid, force = true) }
                                         }
-                                        MessageMediaType.VIDEO -> {
-                                            if (!fullMediaLocalPath.isNullOrBlank()) {
-                                                selectedVideoPath = fullMediaLocalPath
-                                            } else {
-                                                msg.fullFileId?.let { fid -> tdLibManager.downloadMediaFile(fid, force = true) }
-                                                selectedFullMessage = msg
-                                            }
-                                        }
-                                        MessageMediaType.AUDIO, MessageMediaType.VOICE -> {
-                                            if (!mediaLocalPath.isNullOrBlank()) {
-                                                togglePlayAudio(msg.id, mediaLocalPath)
-                                            } else {
-                                                msg.fileId?.let { fid -> tdLibManager.downloadMediaFile(fid, force = true) }
-                                            }
-                                        }
-                                        else -> {
-                                            selectedFullMessage = msg
-                                        }
+                                    } else {
+                                        actionTargetMessage = msg
                                     }
                                 }
                                 .padding(horizontal = 18.dp, vertical = 14.dp)
@@ -940,17 +951,23 @@ fun TvChatDetailScreen(
                                     }
 
                                     if (isMsgFocused) {
-                                        Box(
-                                            modifier = Modifier
-                                                .background(Color(0xFF38BDF8), RoundedCornerShape(6.dp))
-                                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
-                                            Text(
-                                                text = "▶ ВЫБРАНО (ОК)",
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.ExtraBold,
-                                                color = Color.Black
-                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .background(Color(0xFF38BDF8), RoundedCornerShape(6.dp))
+                                                    .clickable { actionTargetMessage = msg }
+                                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                            ) {
+                                                Text(
+                                                    text = "⚡ ДЕЙСТВИЯ (ОК)",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = Color.Black
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -980,6 +997,15 @@ fun TvChatDetailScreen(
                                                     .fillMaxWidth()
                                                     .heightIn(min = 160.dp, max = 240.dp)
                                                     .clip(RoundedCornerShape(12.dp))
+                                                    .clickable {
+                                                        if (msg.mediaType == MessageMediaType.PHOTO) {
+                                                            msg.fullFileId?.let { fid -> tdLibManager.downloadMediaFile(fid, priority = 32, force = true) }
+                                                            selectedPhotoMessage = msg
+                                                        } else if (msg.mediaType == MessageMediaType.VIDEO) {
+                                                            msg.fullFileId?.let { fid -> tdLibManager.downloadMediaFile(fid, priority = 32, force = true) }
+                                                            selectedVideoMessage = msg
+                                                        }
+                                                    }
                                             }
 
                                             Box(modifier = imageModifier) {
@@ -998,7 +1024,7 @@ fun TvChatDetailScreen(
                                                             .padding(horizontal = 8.dp, vertical = 4.dp)
                                                     ) {
                                                         Text(
-                                                            text = if (msg.mediaType == MessageMediaType.PHOTO) "🔍 На весь экран (ОК)" else "▶ Воспроизвести (ОК)",
+                                                            text = if (msg.mediaType == MessageMediaType.PHOTO) "🔍 HD Фото (ОК)" else "▶ Видео ExoPlayer (ОК)",
                                                             fontSize = 10.sp,
                                                             color = Color.White,
                                                             fontWeight = FontWeight.Bold
@@ -1168,6 +1194,54 @@ fun TvChatDetailScreen(
 
         // Блок отправки сообщений отображается ТОЛЬКО если у пользователя есть права на отправку
         if (canSendMessages) {
+            // Баннер ответа на сообщение (если выбран режим ответа)
+            replyingToMessage?.let { repMsg ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF0F1E36))
+                        .border(1.5.dp, Color(0xFF38BDF8), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Reply,
+                        contentDescription = null,
+                        tint = Color(0xFF38BDF8),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Ответ на сообщение: ${repMsg.senderName}",
+                            color = Color(0xFF38BDF8),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = repMsg.text,
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(
+                        onClick = { replyingToMessage = null },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Отменить ответ",
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
             // Быстрые шаблоны ответов
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1448,10 +1522,27 @@ fun TvChatDetailScreen(
         }
     }
 
-    // Полноэкранный просмотр фото на экране ТВ (Пункт 6)
-    selectedPhotoPath?.let { photoPath ->
+    // 1. Полноэкранный просмотр фото на экране ТВ в оригинальном качестве (Пункт 1)
+    selectedPhotoMessage?.let { photoMsg ->
+        val fullPhotoPath = remember(photoMsg.fullFileId, downloadedFiles) {
+            tdLibManager.getFilePath(photoMsg.fullFileId)
+        }
+        val thumbPhotoPath = remember(photoMsg.fileId, downloadedFiles) {
+            tdLibManager.getFilePath(photoMsg.fileId)
+        }
+
+        // Запуск немедленной принудительной загрузки оригинала высокого разрешения
+        LaunchedEffect(photoMsg.fullFileId) {
+            photoMsg.fullFileId?.let { fid ->
+                tdLibManager.downloadMediaFile(fid, priority = 32, force = true)
+            }
+        }
+
+        val displayPhotoPath = fullPhotoPath ?: thumbPhotoPath
+        val isOriginalQuality = (fullPhotoPath != null)
+
         Dialog(
-            onDismissRequest = { selectedPhotoPath = null },
+            onDismissRequest = { selectedPhotoMessage = null },
             properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
             Box(
@@ -1460,21 +1551,47 @@ fun TvChatDetailScreen(
                     .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
-                val photoBitmap = remember(photoPath) {
-                    try {
-                        BitmapFactory.decodeFile(photoPath)?.asImageBitmap()
-                    } catch (_: Throwable) {
-                        null
-                    }
+                val photoBitmap = remember(displayPhotoPath) {
+                    if (!displayPhotoPath.isNullOrBlank()) {
+                        try {
+                            BitmapFactory.decodeFile(displayPhotoPath)?.asImageBitmap()
+                        } catch (_: Throwable) {
+                            null
+                        }
+                    } else null
                 }
 
                 if (photoBitmap != null) {
                     Image(
                         bitmap = photoBitmap,
-                        contentDescription = "Фотография",
+                        contentDescription = "Фотография в высоком качестве",
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize()
                     )
+                } else {
+                    CircularProgressIndicator(color = Color(0xFF38BDF8))
+                }
+
+                // Индикатор оригинального качества фото
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(32.dp)
+                        .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(10.dp))
+                        .border(1.dp, if (isOriginalQuality) Color(0xFF10B981) else Color(0xFFF59E0B), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (isOriginalQuality) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("✓ Исходное качество (HD)", color = Color(0xFF10B981), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        } else {
+                            CircularProgressIndicator(color = Color(0xFFF59E0B), strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Загрузка оригинала в полном разрешении...", color = Color(0xFFFCD34D), fontSize = 12.sp)
+                        }
+                    }
                 }
 
                 // Плавающая кнопка закрытия в правом верхнем углу экрана ТВ
@@ -1485,7 +1602,7 @@ fun TvChatDetailScreen(
                         .padding(32.dp)
                 ) {
                     Button(
-                        onClick = { selectedPhotoPath = null },
+                        onClick = { selectedPhotoMessage = null },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isClosePhotoFocused) Color(0xFF38BDF8) else Color(0xCC111827)
                         ),
@@ -1515,10 +1632,25 @@ fun TvChatDetailScreen(
         }
     }
 
-    // Полноэкранный проигрыватель видеозаписи (Пункт 6)
-    selectedVideoPath?.let { videoPath ->
+    // 2. Полноэкранный проигрыватель видеозаписи через Media3 ExoPlayer (Пункт 2)
+    selectedVideoMessage?.let { videoMsg ->
+        val context = LocalContext.current
+        val fullVideoPath = remember(videoMsg.fullFileId, downloadedFiles) {
+            tdLibManager.getFilePath(videoMsg.fullFileId)
+        }
+        val thumbVideoPath = remember(videoMsg.fileId, downloadedFiles) {
+            tdLibManager.getFilePath(videoMsg.fileId)
+        }
+
+        // Запуск принудительной фоновой загрузки видеофайла
+        LaunchedEffect(videoMsg.fullFileId) {
+            videoMsg.fullFileId?.let { fid ->
+                tdLibManager.downloadMediaFile(fid, priority = 32, force = true)
+            }
+        }
+
         Dialog(
-            onDismissRequest = { selectedVideoPath = null },
+            onDismissRequest = { selectedVideoMessage = null },
             properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
             Box(
@@ -1527,21 +1659,124 @@ fun TvChatDetailScreen(
                     .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
-                AndroidView(
-                    factory = { ctx ->
-                        VideoView(ctx).apply {
-                            setVideoPath(videoPath)
-                            val mediaController = android.widget.MediaController(ctx)
-                            mediaController.setAnchorView(this)
-                            setMediaController(mediaController)
-                            setOnPreparedListener { mp ->
-                                mp.isLooping = true
-                                start()
+                if (fullVideoPath != null && File(fullVideoPath).exists()) {
+                    // ExoPlayer проигрыватель для всех видеоформатов Telegram (MP4, MKV, WebM, H.264, HEVC, VP9)
+                    val exoPlayer = remember(fullVideoPath) {
+                        ExoPlayer.Builder(context).build().apply {
+                            val uri = android.net.Uri.fromFile(File(fullVideoPath))
+                            val mediaItem = MediaItem.fromUri(uri)
+                            setMediaItem(mediaItem)
+                            repeatMode = Player.REPEAT_MODE_ALL
+                            playWhenReady = true
+                            prepare()
+                        }
+                    }
+
+                    DisposableEffect(exoPlayer) {
+                        onDispose {
+                            try {
+                                exoPlayer.stop()
+                                exoPlayer.release()
+                            } catch (_: Throwable) {}
+                        }
+                    }
+
+                    AndroidView(
+                        factory = { ctx ->
+                            PlayerView(ctx).apply {
+                                player = exoPlayer
+                                useController = true
+                                setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    // Экран ожидания загрузки видеофайла с фоновым превью
+                    val thumbBitmap = remember(thumbVideoPath) {
+                        if (!thumbVideoPath.isNullOrBlank()) {
+                            try {
+                                BitmapFactory.decodeFile(thumbVideoPath)?.asImageBitmap()
+                            } catch (_: Throwable) {
+                                null
+                            }
+                        } else null
+                    }
+
+                    if (thumbBitmap != null) {
+                        Image(
+                            bitmap = thumbBitmap,
+                            contentDescription = "Превью видео",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .alpha(0.35f)
+                        )
+                    }
+
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xEE111827)),
+                        modifier = Modifier
+                            .width(480.dp)
+                            .border(2.dp, Color(0xFF38BDF8), RoundedCornerShape(16.dp))
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(28.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = Color(0xFF38BDF8),
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Spacer(modifier = Modifier.height(20.dp))
+                            Text(
+                                text = "Загрузка видеозаписи...",
+                                color = Color.White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = if (videoMsg.mediaInfo.isNotBlank()) "Длительность: ${videoMsg.mediaInfo}" else "Формат Telegram Video",
+                                color = Color(0xFF38BDF8),
+                                fontSize = 13.sp
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Воспроизведение через Media3 ExoPlayer начнется автоматически сразу после завершения загрузки",
+                                color = Color.Gray,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(20.dp))
+                            var isCancelLoadFocused by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = { selectedVideoMessage = null },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isCancelLoadFocused) Color(0xFF38BDF8) else Color(0xFF26334D)
+                                ),
+                                modifier = Modifier
+                                    .onFocusChanged { isCancelLoadFocused = it.isFocused }
+                                    .border(
+                                        width = if (isCancelLoadFocused) 2.5.dp else 1.dp,
+                                        color = if (isCancelLoadFocused) Color.White else Color(0xFF3B4D73),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                            ) {
+                                Text(
+                                    "Отмена (Назад)",
+                                    color = if (isCancelLoadFocused) Color.Black else Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
+                    }
+                }
 
                 // Плавающая кнопка закрытия видео в правом верхнем углу экрана ТВ
                 var isCloseVideoFocused by remember { mutableStateOf(false) }
@@ -1551,7 +1786,7 @@ fun TvChatDetailScreen(
                         .padding(32.dp)
                 ) {
                     Button(
-                        onClick = { selectedVideoPath = null },
+                        onClick = { selectedVideoMessage = null },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isCloseVideoFocused) Color(0xFF38BDF8) else Color(0xCC111827)
                         ),
@@ -1577,6 +1812,507 @@ fun TvChatDetailScreen(
                         )
                     }
                 }
+            }
+        }
+    }
+
+    // 3. Диалог действий с выбранным сообщением (Ответить, Переслать, Удалить) (Пункт 3)
+    actionTargetMessage?.let { targetMsg ->
+        Dialog(
+            onDismissRequest = { actionTargetMessage = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF111522)),
+                modifier = Modifier
+                    .width(580.dp)
+                    .wrapContentHeight()
+                    .border(2.dp, Color(0xFF38BDF8), RoundedCornerShape(18.dp))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Действия с сообщением",
+                                color = Color(0xFF38BDF8),
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "${targetMsg.senderName} • ${targetMsg.time}",
+                                color = Color.Gray,
+                                fontSize = 12.sp
+                            )
+                        }
+                        IconButton(
+                            onClick = { actionTargetMessage = null },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Закрыть", tint = Color.White)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF090C14))
+                            .border(1.dp, Color(0xFF1E2638), RoundedCornerShape(10.dp))
+                            .padding(14.dp)
+                    ) {
+                        Text(
+                            text = targetMsg.text,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        // Действие: Просмотр фото в исходном HD качестве
+                        if (targetMsg.mediaType == MessageMediaType.PHOTO) {
+                            var isPhotoActFocused by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = {
+                                    val msgToView = targetMsg
+                                    actionTargetMessage = null
+                                    msgToView.fullFileId?.let { fid -> tdLibManager.downloadMediaFile(fid, priority = 32, force = true) }
+                                    selectedPhotoMessage = msgToView
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isPhotoActFocused) Color(0xFF38BDF8) else Color(0xFF1E2A42)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .onFocusChanged { isPhotoActFocused = it.isFocused }
+                                    .border(
+                                        width = if (isPhotoActFocused) 2.5.dp else 1.dp,
+                                        color = if (isPhotoActFocused) Color.White else Color(0xFF2E3E5E),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                            ) {
+                                Icon(Icons.Default.ZoomIn, contentDescription = null, tint = if (isPhotoActFocused) Color.Black else Color(0xFF38BDF8))
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text("🔍 Просмотреть фото в исходном качестве (HD)", color = if (isPhotoActFocused) Color.Black else Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
+                        }
+
+                        // Действие: Воспроизвести видео
+                        if (targetMsg.mediaType == MessageMediaType.VIDEO) {
+                            var isVideoActFocused by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = {
+                                    val msgToView = targetMsg
+                                    actionTargetMessage = null
+                                    msgToView.fullFileId?.let { fid -> tdLibManager.downloadMediaFile(fid, priority = 32, force = true) }
+                                    selectedVideoMessage = msgToView
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isVideoActFocused) Color(0xFF38BDF8) else Color(0xFF1E2A42)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .onFocusChanged { isVideoActFocused = it.isFocused }
+                                    .border(
+                                        width = if (isVideoActFocused) 2.5.dp else 1.dp,
+                                        color = if (isVideoActFocused) Color.White else Color(0xFF2E3E5E),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = if (isVideoActFocused) Color.Black else Color(0xFF38BDF8))
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text("▶ Воспроизвести видеозапись (${targetMsg.mediaInfo})", color = if (isVideoActFocused) Color.Black else Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
+                        }
+
+                        // Действие: Ответить
+                        if (canSendMessages) {
+                            var isReplyActFocused by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = {
+                                    replyingToMessage = targetMsg
+                                    actionTargetMessage = null
+                                    isInputEditing = true
+                                    scope.launch {
+                                        delay(100)
+                                        textFieldFocusRequester.requestFocus()
+                                        keyboardController?.show()
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isReplyActFocused) Color(0xFF38BDF8) else Color(0xFF1E2A42)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .onFocusChanged { isReplyActFocused = it.isFocused }
+                                    .border(
+                                        width = if (isReplyActFocused) 2.5.dp else 1.dp,
+                                        color = if (isReplyActFocused) Color.White else Color(0xFF2E3E5E),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                            ) {
+                                Icon(Icons.Default.Reply, contentDescription = null, tint = if (isReplyActFocused) Color.Black else Color(0xFF38BDF8))
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text("↩️ Ответить на сообщение", color = if (isReplyActFocused) Color.Black else Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
+                        }
+
+                        // Действие: Переслать
+                        var isForwardActFocused by remember { mutableStateOf(false) }
+                        Button(
+                            onClick = {
+                                val toFwd = targetMsg
+                                actionTargetMessage = null
+                                forwardingMessage = toFwd
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isForwardActFocused) Color(0xFF38BDF8) else Color(0xFF1E2A42)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .onFocusChanged { isForwardActFocused = it.isFocused }
+                                .border(
+                                    width = if (isForwardActFocused) 2.5.dp else 1.dp,
+                                    color = if (isForwardActFocused) Color.White else Color(0xFF2E3E5E),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, tint = if (isForwardActFocused) Color.Black else Color(0xFF38BDF8))
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text("↗️ Переслать в другой чат", color = if (isForwardActFocused) Color.Black else Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+
+                        // Действие: Читать текст целиком (если текст длинный)
+                        if (targetMsg.text.length > 200) {
+                            var isReadActFocused by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = {
+                                    val toRead = targetMsg
+                                    actionTargetMessage = null
+                                    selectedFullMessage = toRead
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isReadActFocused) Color(0xFF38BDF8) else Color(0xFF1E2A42)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .onFocusChanged { isReadActFocused = it.isFocused }
+                                    .border(
+                                        width = if (isReadActFocused) 2.5.dp else 1.dp,
+                                        color = if (isReadActFocused) Color.White else Color(0xFF2E3E5E),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                            ) {
+                                Icon(Icons.Default.MenuBook, contentDescription = null, tint = if (isReadActFocused) Color.Black else Color(0xFF38BDF8))
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text("📖 Читать полностью со скроллом", color = if (isReadActFocused) Color.Black else Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
+                        }
+
+                        // Действие: Удалить
+                        var isDeleteActFocused by remember { mutableStateOf(false) }
+                        Button(
+                            onClick = {
+                                val toDel = targetMsg
+                                actionTargetMessage = null
+                                deletingMessage = toDel
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isDeleteActFocused) Color(0xFFEF4444) else Color(0xFF2A151B)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .onFocusChanged { isDeleteActFocused = it.isFocused }
+                                .border(
+                                    width = if (isDeleteActFocused) 2.5.dp else 1.dp,
+                                    color = if (isDeleteActFocused) Color.White else Color(0xFF4C1D26),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, tint = if (isDeleteActFocused) Color.White else Color(0xFFEF4444))
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text("🗑️ Удалить сообщение", color = if (isDeleteActFocused) Color.White else Color(0xFFFCA5A5), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Диалог выбора чата для пересылки сообщения
+    forwardingMessage?.let { msgToForward ->
+        val chatsToForward = remember(tdLibManager.chatsList) { tdLibManager.chatsList }
+        Dialog(
+            onDismissRequest = { forwardingMessage = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF131722)),
+                modifier = Modifier
+                    .width(620.dp)
+                    .fillMaxHeight(0.75f)
+                    .border(2.dp, Color(0xFF38BDF8), RoundedCornerShape(18.dp))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Переслать сообщение",
+                            color = Color(0xFF38BDF8),
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Button(
+                            onClick = { forwardingMessage = null },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF26334D))
+                        ) {
+                            Text("Отмена", color = Color.White, fontSize = 12.sp)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "Выберите чат получателя из списка:",
+                        color = Color.Gray,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(chatsToForward, key = { it.id }) { targetChat ->
+                            var isTargetFocused by remember { mutableStateOf(false) }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (isTargetFocused) Color(0xFF0284C7) else Color(0xFF1E2538))
+                                    .border(
+                                        width = if (isTargetFocused) 2.5.dp else 1.dp,
+                                        color = if (isTargetFocused) Color.White else Color(0xFF2F3B55),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .onFocusChanged { isTargetFocused = it.isFocused }
+                                    .clickable {
+                                        scope.launch {
+                                            val fwdRes = tdLibManager.forwardMessages(
+                                                fromChatId = chatId,
+                                                toChatId = targetChat.id,
+                                                messageIds = longArrayOf(msgToForward.id)
+                                            )
+                                            if (fwdRes.isSuccess) {
+                                                toastNotification = "✓ Сообщение переслано в ${targetChat.title}"
+                                            } else {
+                                                toastNotification = "Не удалось переслать сообщение"
+                                            }
+                                            forwardingMessage = null
+                                        }
+                                    }
+                                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Send,
+                                    contentDescription = null,
+                                    tint = if (isTargetFocused) Color.Black else Color(0xFF38BDF8),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = targetChat.title,
+                                    color = if (isTargetFocused) Color.Black else Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Диалог подтверждения удаления сообщения
+    deletingMessage?.let { msgToDelete ->
+        Dialog(
+            onDismissRequest = { deletingMessage = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF161B26)),
+                modifier = Modifier
+                    .width(520.dp)
+                    .wrapContentHeight()
+                    .border(2.dp, Color(0xFFEF4444), RoundedCornerShape(18.dp))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(26.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Удалить сообщение?",
+                            color = Color.White,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "Вы действительно хотите удалить это сообщение из чата?",
+                        color = Color(0xFFCBD5E1),
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "\"${msgToDelete.text.take(80)}\"",
+                        color = Color.Gray,
+                        fontSize = 12.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        var isRevokeFocused by remember { mutableStateOf(false) }
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    tdLibManager.deleteMessages(chatId, longArrayOf(msgToDelete.id), revoke = true)
+                                    messagesList = messagesList.filterNot { it.id == msgToDelete.id }
+                                    toastNotification = "✓ Сообщение удалено для всех"
+                                    deletingMessage = null
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isRevokeFocused) Color(0xFFEF4444) else Color(0xFF7F1D1D)
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { isRevokeFocused = it.isFocused }
+                                .border(
+                                    width = if (isRevokeFocused) 2.5.dp else 1.dp,
+                                    color = if (isRevokeFocused) Color.White else Color(0xFF991B1B),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                        ) {
+                            Text("Для всех", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        var isSelfFocused by remember { mutableStateOf(false) }
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    tdLibManager.deleteMessages(chatId, longArrayOf(msgToDelete.id), revoke = false)
+                                    messagesList = messagesList.filterNot { it.id == msgToDelete.id }
+                                    toastNotification = "✓ Сообщение удалено"
+                                    deletingMessage = null
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isSelfFocused) Color(0xFF38BDF8) else Color(0xFF1E293B)
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { isSelfFocused = it.isFocused }
+                                .border(
+                                    width = if (isSelfFocused) 2.5.dp else 1.dp,
+                                    color = if (isSelfFocused) Color.White else Color(0xFF334155),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                        ) {
+                            Text("У меня", color = if (isSelfFocused) Color.Black else Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        var isCancelFocused by remember { mutableStateOf(false) }
+                        Button(
+                            onClick = { deletingMessage = null },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isCancelFocused) Color.White else Color(0xFF26334D)
+                            ),
+                            modifier = Modifier
+                                .onFocusChanged { isCancelFocused = it.isFocused }
+                                .border(
+                                    width = if (isCancelFocused) 2.5.dp else 1.dp,
+                                    color = if (isCancelFocused) Color.Black else Color(0xFF3B4D73),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                        ) {
+                            Text("Отмена", color = if (isCancelFocused) Color.Black else Color.White, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Всплывающее уведомление о действии
+    toastNotification?.let { msg ->
+        LaunchedEffect(msg) {
+            delay(3000)
+            toastNotification = null
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = 80.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xEE1E293B)),
+                modifier = Modifier.border(1.5.dp, Color(0xFF38BDF8), RoundedCornerShape(12.dp))
+            ) {
+                Text(
+                    text = msg,
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+                )
             }
         }
     }
