@@ -2064,7 +2064,7 @@ fun TvChatDetailScreen(
 
     // 4. Диалог выбора чата для пересылки сообщения
     forwardingMessage?.let { msgToForward ->
-        val chatsToForward = remember(tdLibManager.chatsList) { tdLibManager.chatsList }
+        val chatsToForward by tdLibManager.chatsList.collectAsState()
         Dialog(
             onDismissRequest = { forwardingMessage = null },
             properties = DialogProperties(usePlatformDefaultWidth = false)

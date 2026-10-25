@@ -2,6 +2,13 @@
 
 Все важные изменения проекта Cybermasters TG TV (CMTGTV) фиксируются в этом файле.
 
+## [1.0.42] - 2026-10-24
+
+### Исправлено
+- **Устранение ошибки компиляции `compileReleaseKotlin` в диалоге пересылки сообщений (`TvChatDetailScreen.kt`):**
+  - Исправлен тип `chatsToForward` со `StateFlow<List<Chat>>` на актуальный список `List<Chat>` через `collectAsState()`.
+  - Устранен конфликт перегрузки `items(...)` в Jetpack Compose LazyColumn при пересылке сообщений.
+
 ## [1.0.41] - 2026-10-24
 
 ### Добавлено и улучшено
