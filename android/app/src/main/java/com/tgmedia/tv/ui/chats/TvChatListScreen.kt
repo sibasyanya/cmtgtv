@@ -1,6 +1,7 @@
 package com.tgmedia.tv.ui.chats
 
 import android.graphics.BitmapFactory
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -9,12 +10,15 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,12 +28,17 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.tgmedia.tv.data.tdlib.TdLibManager
 import com.tgmedia.tv.ui.proxy.TgAccentCyan
 import com.tgmedia.tv.ui.proxy.TgCardBg
@@ -38,9 +47,13 @@ import com.tgmedia.tv.ui.proxy.TgPrimary
 import com.tgmedia.tv.ui.proxy.TgSurface
 import com.tgmedia.tv.ui.proxy.TgTextSecondary
 import com.tgmedia.tv.ui.proxy.TgTextWhite
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class UiChatItem(
     val id: Long,
@@ -85,8 +98,9 @@ fun TdApi.Chat.toUiChatItem(avatarPath: String?): UiChatItem {
 
 /**
  * 10-Foot UI экран списка каналов и чатов для Android TV с D-Pad навигацией.
- * Отображает реальные чаты аккаунта из TDLib, сохраняет позицию скролла при возврате
- * и загружает реальные аватарки каналов и чатов.
+ * Отображает реальные чаты аккаунта из TDLib в режиме непрерывной реактивной синхронизации,
+ * поддерживает глобальный поиск (по своим чатам, публичным каналам/группам и сообщениям)
+ * и сохраняет позицию скролла при возврате.
  */
 @Composable
 fun TvChatListScreen(
@@ -106,8 +120,9 @@ fun TvChatListScreen(
     val coroutineScope = rememberCoroutineScope()
 
     var isLoading by remember { mutableStateOf(false) }
+    var showGlobalSearchDialog by remember { mutableStateOf(false) }
 
-    fun refreshChats() {
+    fun loadInitialChats() {
         isLoading = true
         coroutineScope.launch {
             tdLibManager.loadCurrentUser()
@@ -122,7 +137,7 @@ fun TvChatListScreen(
 
     LaunchedEffect(Unit) {
         if (chatsFromTdLib.isEmpty()) {
-            refreshChats()
+            loadInitialChats()
         } else {
             tdLibManager.loadCurrentUser()
         }
@@ -177,35 +192,40 @@ fun TvChatListScreen(
                 )
             }
 
-            // Правый блок действий в шапке
+            // Правый блок действий в шапке (Глобальный поиск + Профиль)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Кнопка обновления
-                var isRefreshFocused by remember { mutableStateOf(false) }
+                // Кнопка глобального поиска
+                var isSearchFocused by remember { mutableStateOf(false) }
                 Button(
-                    onClick = { refreshChats() },
+                    onClick = { showGlobalSearchDialog = true },
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isRefreshFocused) TgAccentCyan else TgSurface
+                        containerColor = if (isSearchFocused) TgAccentCyan else TgSurface
                     ),
                     modifier = Modifier
-                        .onFocusChanged { isRefreshFocused = it.isFocused }
+                        .onFocusChanged { isSearchFocused = it.isFocused }
+                        .border(
+                            width = if (isSearchFocused) 2.5.dp else 1.dp,
+                            color = if (isSearchFocused) Color.White else Color(0xFF222B3D),
+                            shape = RoundedCornerShape(10.dp)
+                        )
                         .height(40.dp)
                 ) {
                     Icon(
-                        Icons.Default.Refresh,
-                        contentDescription = null,
-                        tint = if (isRefreshFocused) Color.Black else Color.White,
+                        Icons.Default.Search,
+                        contentDescription = "Глобальный поиск",
+                        tint = if (isSearchFocused) Color.Black else TgAccentCyan,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Обновить",
-                        color = if (isRefreshFocused) Color.Black else Color.White,
+                        text = "Глобальный поиск",
+                        color = if (isSearchFocused) Color.Black else Color.White,
                         fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.Bold
                     )
                 }
 
@@ -434,11 +454,13 @@ fun TvChatListScreen(
                         )
                         Spacer(modifier = Modifier.height(20.dp))
                         Button(
-                            onClick = { refreshChats() },
+                            onClick = { showGlobalSearchDialog = true },
                             colors = ButtonDefaults.buttonColors(containerColor = TgPrimary),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            Text("Повторить загрузку", color = Color.White)
+                            Icon(Icons.Default.Search, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Открыть глобальный поиск", color = Color.White)
                         }
                     }
                 }
@@ -457,6 +479,555 @@ fun TvChatListScreen(
                         onFocused = { currentFocusedChatId = chat.id },
                         onClick = { onSelectChat(chat.id, chat.title) }
                     )
+                }
+            }
+        }
+    }
+
+    if (showGlobalSearchDialog) {
+        GlobalSearchDialog(
+            tdLibManager = tdLibManager,
+            downloadedFiles = downloadedFiles,
+            onDismiss = { showGlobalSearchDialog = false },
+            onSelectChat = { chatId, title ->
+                showGlobalSearchDialog = false
+                onSelectChat(chatId, title)
+            }
+        )
+    }
+}
+
+private enum class SearchTabFilter {
+    ALL,
+    LOCAL_CHATS,
+    PUBLIC_GLOBAL,
+    MESSAGES
+}
+
+@Composable
+private fun GlobalSearchDialog(
+    tdLibManager: TdLibManager,
+    downloadedFiles: Map<Int, String>,
+    onDismiss: () -> Unit,
+    onSelectChat: (chatId: Long, title: String) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val inputFocusRequester = remember { FocusRequester() }
+
+    var searchQuery by remember { mutableStateOf("") }
+    var isEditingQuery by remember { mutableStateOf(false) }
+    var isInputBoxFocused by remember { mutableStateOf(false) }
+    var isSearching by remember { mutableStateOf(false) }
+    var activeTab by remember { mutableStateOf(SearchTabFilter.ALL) }
+    var searchResult by remember { mutableStateOf(TdLibManager.GlobalSearchResult()) }
+    var statusBanner by remember { mutableStateOf<String?>(null) }
+
+    BackHandler(onBack = onDismiss)
+
+    // Автоматический реактивный поиск при изменении строки запроса (с debounce 350 мс)
+    LaunchedEffect(searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) {
+            searchResult = TdLibManager.GlobalSearchResult()
+            isSearching = false
+            statusBanner = null
+            return@LaunchedEffect
+        }
+        isSearching = true
+        delay(350)
+        try {
+            searchResult = tdLibManager.performGlobalSearch(q)
+        } catch (_: Exception) {}
+        isSearching = false
+    }
+
+    fun executeManualSearch() {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) return
+        isEditingQuery = false
+        keyboardController?.hide()
+        isSearching = true
+        scope.launch {
+            try {
+                searchResult = tdLibManager.performGlobalSearch(q)
+            } catch (_: Exception) {}
+            isSearching = false
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0E131F)),
+            modifier = Modifier
+                .width(920.dp)
+                .fillMaxHeight(0.88f)
+                .border(2.dp, TgAccentCyan, RoundedCornerShape(20.dp))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(26.dp)
+            ) {
+                // Шапка окна глобального поиска
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "🔍 Глобальный поиск Telegram",
+                            color = TgTextWhite,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Поиск по вашим диалогам, публичным каналам (@username / t.me) и тексту сообщений",
+                            color = TgTextSecondary,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    var isCloseFocused by remember { mutableStateOf(false) }
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isCloseFocused) TgAccentCyan else Color(0xFF1E293B)
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .onFocusChanged { isCloseFocused = it.isFocused }
+                            .border(
+                                width = if (isCloseFocused) 2.5.dp else 1.dp,
+                                color = if (isCloseFocused) Color.White else Color(0xFF334155),
+                                shape = RoundedCornerShape(10.dp)
+                            )
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = null,
+                            tint = if (isCloseFocused) Color.Black else Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Закрыть (Назад)",
+                            color = if (isCloseFocused) Color.Black else Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Строка ввода поискового запроса (клавиатура строго по кнопке ОК)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF151C2C))
+                            .border(
+                                width = if (isInputBoxFocused) 3.5.dp else 1.dp,
+                                color = if (isInputBoxFocused) TgAccentCyan else Color(0xFF28354E),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .onFocusChanged { isInputBoxFocused = it.isFocused }
+                            .clickable {
+                                isEditingQuery = true
+                                scope.launch {
+                                    delay(80)
+                                    try {
+                                        inputFocusRequester.requestFocus()
+                                        keyboardController?.show()
+                                    } catch (_: Exception) {}
+                                }
+                            }
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Search,
+                                contentDescription = null,
+                                tint = TgAccentCyan,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Box(modifier = Modifier.weight(1f)) {
+                                if (isEditingQuery) {
+                                    BasicTextField(
+                                        value = searchQuery,
+                                        onValueChange = { searchQuery = it },
+                                        textStyle = TextStyle(color = Color.White, fontSize = 15.sp),
+                                        cursorBrush = SolidColor(TgAccentCyan),
+                                        singleLine = true,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .focusRequester(inputFocusRequester)
+                                    )
+                                } else {
+                                    Text(
+                                        text = if (searchQuery.isNotBlank()) searchQuery else "Нажмите ОК для ввода названия канала, @username, ссылки t.me или текста...",
+                                        color = if (searchQuery.isNotBlank()) Color.White else Color(0xFF94A3B8),
+                                        fontSize = 14.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (searchQuery.isNotBlank()) {
+                        var isClearFocused by remember { mutableStateOf(false) }
+                        Button(
+                            onClick = {
+                                searchQuery = ""
+                                isEditingQuery = false
+                                keyboardController?.hide()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isClearFocused) TgAccentCyan else Color(0xFF1E293B)
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .height(46.dp)
+                                .onFocusChanged { isClearFocused = it.isFocused }
+                        ) {
+                            Text(
+                                "Сброс",
+                                color = if (isClearFocused) Color.Black else Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    var isFindBtnFocused by remember { mutableStateOf(false) }
+                    Button(
+                        onClick = { executeManualSearch() },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isFindBtnFocused) TgAccentCyan else TgPrimary
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .height(46.dp)
+                            .onFocusChanged { isFindBtnFocused = it.isFocused }
+                            .border(
+                                width = if (isFindBtnFocused) 2.5.dp else 1.dp,
+                                color = if (isFindBtnFocused) Color.White else Color.Transparent,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                    ) {
+                        Text(
+                            "Найти (ОК)",
+                            color = if (isFindBtnFocused) Color.Black else Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Вкладки фильтрации результатов поиска
+                val totalCount = searchResult.localChats.size + searchResult.publicChats.size + searchResult.messages.size
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    val tabs = listOf(
+                        SearchTabFilter.ALL to "Все результаты ($totalCount)",
+                        SearchTabFilter.LOCAL_CHATS to "Мои чаты (${searchResult.localChats.size})",
+                        SearchTabFilter.PUBLIC_GLOBAL to "Глобальные каналы (${searchResult.publicChats.size})",
+                        SearchTabFilter.MESSAGES to "Сообщения (${searchResult.messages.size})"
+                    )
+                    items(tabs) { (tabType, label) ->
+                        val isSelected = activeTab == tabType
+                        var isTabFocused by remember { mutableStateOf(false) }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    when {
+                                        isTabFocused -> TgAccentCyan
+                                        isSelected -> TgPrimary
+                                        else -> Color(0xFF151C2C)
+                                    }
+                                )
+                                .border(
+                                    width = if (isTabFocused) 2.5.dp else 1.dp,
+                                    color = if (isTabFocused) Color.White else if (isSelected) TgAccentCyan else Color(0xFF25324B),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                .onFocusChanged { isTabFocused = it.isFocused }
+                                .clickable { activeTab = tabType }
+                                .padding(horizontal = 14.dp, vertical = 7.dp)
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (isTabFocused) Color.Black else Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = if (isSelected || isTabFocused) FontWeight.Bold else FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+
+                statusBanner?.let { banner ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = banner,
+                        color = TgAccentCyan,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Кнопка прямого перехода по введенной ссылке или @username
+                val trimmedQuery = searchQuery.trim()
+                if (trimmedQuery.startsWith("@") || trimmedQuery.contains("t.me/") || trimmedQuery.startsWith("tg://")) {
+                    var isDirectLinkFocused by remember { mutableStateOf(false) }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 10.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isDirectLinkFocused) TgAccentCyan else Color(0xFF122B40))
+                            .border(
+                                width = if (isDirectLinkFocused) 3.dp else 1.dp,
+                                color = if (isDirectLinkFocused) Color.White else TgAccentCyan,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .onFocusChanged { isDirectLinkFocused = it.isFocused }
+                            .clickable {
+                                scope.launch {
+                                    statusBanner = "Переход по ссылке $trimmedQuery..."
+                                    when (val act = tdLibManager.resolveAndHandleLink(trimmedQuery)) {
+                                        is TdLibManager.ResolvedLinkAction.OpenChat -> {
+                                            onSelectChat(act.chatId, act.chatTitle)
+                                        }
+                                        is TdLibManager.ResolvedLinkAction.ProxyImported -> {
+                                            statusBanner = act.message
+                                        }
+                                        is TdLibManager.ResolvedLinkAction.Error -> {
+                                            statusBanner = act.message
+                                        }
+                                        is TdLibManager.ResolvedLinkAction.OpenExternalWeb -> {
+                                            statusBanner = "Внешняя ссылка: ${act.url}"
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = "✈️ Открыть напрямую ссылку или @юзернейм: $trimmedQuery",
+                            color = if (isDirectLinkFocused) Color.Black else Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Перейти (ОК) →",
+                            color = if (isDirectLinkFocused) Color.Black else TgAccentCyan,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+
+                // Список результатов
+                if (isSearching && totalCount == 0) {
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = TgAccentCyan)
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Глобальный поиск в Telegram...", color = TgTextWhite, fontSize = 14.sp)
+                        }
+                    }
+                } else if (trimmedQuery.isEmpty()) {
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "Введите текст, @username или ссылку t.me для поиска каналов, групп, ботов и сообщений",
+                            color = TgTextSecondary,
+                            fontSize = 14.sp
+                        )
+                    }
+                } else if (totalCount == 0 && !isSearching) {
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "По запросу «$trimmedQuery» ничего не найдено",
+                            color = TgTextSecondary,
+                            fontSize = 15.sp
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
+                        // 1. Секция: Мои чаты
+                        if ((activeTab == SearchTabFilter.ALL || activeTab == SearchTabFilter.LOCAL_CHATS) &&
+                            searchResult.localChats.isNotEmpty()
+                        ) {
+                            item(key = "header_local") {
+                                Text(
+                                    text = "МОИ ЧАТЫ И КАНАЛЫ (${searchResult.localChats.size})",
+                                    color = TgAccentCyan,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                                )
+                            }
+                            items(searchResult.localChats, key = { "loc_${it.id}" }) { chat ->
+                                val uiItem = remember(chat, downloadedFiles) {
+                                    chat.toUiChatItem(tdLibManager.getChatPhotoPath(chat))
+                                }
+                                ChatRowItem(
+                                    chat = uiItem,
+                                    onClick = { onSelectChat(uiItem.id, uiItem.title) }
+                                )
+                            }
+                        }
+
+                        // 2. Секция: Глобальный поиск публичных каналов/групп
+                        if ((activeTab == SearchTabFilter.ALL || activeTab == SearchTabFilter.PUBLIC_GLOBAL) &&
+                            searchResult.publicChats.isNotEmpty()
+                        ) {
+                            item(key = "header_public") {
+                                Text(
+                                    text = "ГЛОБАЛЬНЫЙ ПОИСК TELEGRAM (${searchResult.publicChats.size})",
+                                    color = Color(0xFF34D399),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+                                )
+                            }
+                            items(searchResult.publicChats, key = { "pub_${it.id}" }) { chat ->
+                                val uiItem = remember(chat, downloadedFiles) {
+                                    chat.toUiChatItem(tdLibManager.getChatPhotoPath(chat))
+                                }
+                                ChatRowItem(
+                                    chat = uiItem.copy(
+                                        lastMessage = "🌐 Публичный канал / чат Telegram • Нажмите ОК для открытия"
+                                    ),
+                                    onClick = { onSelectChat(uiItem.id, uiItem.title) }
+                                )
+                            }
+                        }
+
+                        // 3. Секция: Найденные сообщения во всех чатах
+                        if ((activeTab == SearchTabFilter.ALL || activeTab == SearchTabFilter.MESSAGES) &&
+                            searchResult.messages.isNotEmpty()
+                        ) {
+                            item(key = "header_messages") {
+                                Text(
+                                    text = "НАЙДЕННЫЕ СООБЩЕНИЯ (${searchResult.messages.size})",
+                                    color = Color(0xFFFBBF24),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+                                )
+                            }
+                            items(
+                                searchResult.messages,
+                                key = { "msg_${it.chatId}_${it.message.id}" }
+                            ) { foundItem ->
+                                var isMsgRowFocused by remember { mutableStateOf(false) }
+                                val msgUi = remember(foundItem) {
+                                    foundItem.message.toUiMessage(foundItem.senderName)
+                                }
+                                val dateStr = remember(foundItem.message.date) {
+                                    try {
+                                        SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
+                                            .format(Date(foundItem.message.date * 1000L))
+                                    } catch (_: Exception) {
+                                        msgUi.time
+                                    }
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (isMsgRowFocused) Color(0xFF1E293B) else TgCardBg)
+                                        .border(
+                                            width = if (isMsgRowFocused) 3.5.dp else 1.dp,
+                                            color = if (isMsgRowFocused) TgAccentCyan else Color(0xFF222B3D),
+                                            shape = RoundedCornerShape(14.dp)
+                                        )
+                                        .onFocusChanged { isMsgRowFocused = it.isFocused }
+                                        .clickable {
+                                            onSelectChat(foundItem.chatId, foundItem.chatTitle)
+                                        }
+                                        .padding(horizontal = 18.dp, vertical = 12.dp)
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = foundItem.chatTitle,
+                                                color = TgAccentCyan,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "• ${foundItem.senderName}",
+                                                color = TgTextSecondary,
+                                                fontSize = 12.sp,
+                                                maxLines = 1
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = msgUi.text,
+                                            color = TgTextWhite,
+                                            fontSize = 14.sp,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            text = dateStr,
+                                            color = TgTextSecondary,
+                                            fontSize = 11.sp
+                                        )
+                                        if (isMsgRowFocused) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = "Открыть чат (ОК) →",
+                                                color = TgAccentCyan,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Star,
   Tv,
@@ -9,9 +9,9 @@ import {
   Play,
   Flame,
   LogOut,
-  Send,
-  Users,
-  CheckCheck
+  Search,
+  X,
+  Globe
 } from 'lucide-react';
 import { MediaVideoItem, ChatItem } from '../types';
 import { MOCK_CHANNELS } from '../data/mockMedia';
@@ -37,6 +37,10 @@ export const TvMediaHub: React.FC<TvMediaHubProps> = ({
   onSelectChat,
   onLogout,
 }) => {
+  const [showGlobalSearch, setShowGlobalSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchFilter, setSearchFilter] = useState<'all' | 'chats' | 'global' | 'messages'>('all');
+
   const categories = [
     { id: 'feed', label: 'Видеопоток', icon: Film },
     { id: 'chats', label: 'Чаты и Сообщения', icon: MessageSquare },
@@ -47,6 +51,12 @@ export const TvMediaHub: React.FC<TvMediaHubProps> = ({
 
   const currentCategory = categories[sidebarIndex] || categories[0];
   const isChatTab = currentCategory.id === 'chats';
+
+  const filteredChats = chats.filter(
+    (c) =>
+      c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.lastMessage.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   return (
     <div
@@ -128,14 +138,146 @@ export const TvMediaHub: React.FC<TvMediaHubProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-4 text-xs text-zinc-400 font-mono">
+          <div className="flex items-center gap-3 text-xs text-zinc-400 font-mono">
+            <button
+              type="button"
+              onClick={() => setShowGlobalSearch(true)}
+              className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500 text-sky-300 hover:text-black font-sans font-bold text-xs border border-sky-500/40 transition cursor-pointer"
+            >
+              <Search className="w-3.5 h-3.5" />
+              <span>Глобальный поиск</span>
+            </button>
             <span className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400" />
-              TDLib: Ready (API 279933)
+              Синхронизация Live
             </span>
-            <span className="hidden md:inline">Управление: Пульт ДУ / Стрелки клавиатуры</span>
           </div>
         </header>
+
+        {/* Global Search Modal */}
+        {showGlobalSearch && (
+          <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+            <div className="w-full max-w-3xl bg-zinc-900 border-2 border-sky-400 rounded-2xl p-5 flex flex-col max-h-[88%] shadow-2xl">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-sky-400 flex items-center gap-2">
+                    <Search className="w-4 h-4" />
+                    Глобальный поиск Telegram
+                  </h3>
+                  <p className="text-[11px] text-zinc-400">
+                    Поиск по вашим диалогам, публичным каналам (@username / t.me/...) и тексту сообщений
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowGlobalSearch(false)}
+                  className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 mb-3">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Введите запрос, @username или ссылку t.me/..."
+                  className="flex-1 bg-zinc-950 border border-sky-500/50 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-sky-400"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="px-3 py-2 rounded-xl bg-zinc-800 text-xs text-zinc-300 hover:text-white"
+                  >
+                    Сброс
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 mb-3 text-[11px]">
+                {[
+                  { id: 'all', label: 'Все результаты' },
+                  { id: 'chats', label: 'Мои чаты' },
+                  { id: 'global', label: 'Глобальные каналы' },
+                  { id: 'messages', label: 'Сообщения' },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setSearchFilter(tab.id as 'all' | 'chats' | 'global' | 'messages')}
+                    className={`px-3 py-1 rounded-lg font-semibold transition ${
+                      searchFilter === tab.id
+                        ? 'bg-sky-500 text-black'
+                        : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                {filteredChats.map((chat) => (
+                  <div
+                    key={chat.id}
+                    onClick={() => {
+                      setShowGlobalSearch(false);
+                      onSelectChat(chat);
+                    }}
+                    className="flex items-center justify-between p-3 rounded-xl bg-zinc-950/90 hover:bg-sky-500/20 border border-zinc-800 hover:border-sky-400 cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <img src={chat.avatarUrl} alt={chat.title} className="w-9 h-9 rounded-full object-cover" />
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white truncate flex items-center gap-1.5">
+                          <span>{chat.title}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300">
+                            {chat.type === 'channel' ? 'Канал' : 'Чат'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-zinc-400 truncate">{chat.lastMessage}</p>
+                      </div>
+                    </div>
+                    <span className="text-[11px] text-sky-400 font-semibold ml-3">Открыть (ОК)</span>
+                  </div>
+                ))}
+                {searchQuery.trim().length > 1 && (
+                  <div
+                    onClick={() => {
+                      setShowGlobalSearch(false);
+                      onSelectChat({
+                        id: `public-${Date.now()}`,
+                        title: searchQuery.startsWith('@') ? searchQuery : `@${searchQuery}`,
+                        type: 'channel',
+                        avatarUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80',
+                        lastMessage: 'Публичный канал Telegram • Найдено через глобальный поиск TDLib',
+                        unreadCount: 0,
+                        date: 'Глобальный поиск',
+                        verified: true,
+                      });
+                    }}
+                    className="flex items-center justify-between p-3 rounded-xl bg-sky-950/40 hover:bg-sky-500/25 border border-sky-500/40 cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Globe className="w-5 h-5 text-sky-400" />
+                      <div>
+                        <div className="text-xs font-bold text-white">
+                          Перейти по ссылке / юзернейму: {searchQuery}
+                        </div>
+                        <div className="text-[10px] text-sky-300">
+                          TDLib SearchPublicChat / SearchMessages
+                        </div>
+                      </div>
+                    </div>
+                    <span className="text-[11px] text-sky-400 font-bold">Перейти (ОК)</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* TAB 1: CHATS & CHANNELS LIST */}
         {isChatTab ? (

@@ -43,14 +43,24 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val chatListState = androidx.compose.foundation.lazy.rememberLazyListState()
+            var lastSelectedChatId by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<Long?>(null) }
+            val chatBackStack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<TvScreen.ChatDetail>() }
+
             // Обработка кнопки «Назад» на пульте ТВ:
-            // Если находимся в чате -> возвращаемся в список чатов
+            // Если перешли по внутренней ссылке из одного чата в другой -> возвращаемся в предыдущий чат
+            // Если находимся в корневом чате -> возвращаемся в список чатов
             // Если в настройках аккаунта -> возвращаемся в список чатов
             // Если в списке чатов -> система безопасно сворачивает приложение (не выбрасывает на ввод номера)
             BackHandler(enabled = currentScreen !is TvScreen.ChatList && currentScreen !is TvScreen.Auth) {
                 when (currentScreen) {
                     is TvScreen.ChatDetail -> {
-                        currentScreen = TvScreen.ChatList
+                        if (chatBackStack.isNotEmpty()) {
+                            val previousChat = chatBackStack.removeAt(chatBackStack.lastIndex)
+                            currentScreen = previousChat
+                        } else {
+                            currentScreen = TvScreen.ChatList
+                        }
                     }
                     is TvScreen.AccountSettings -> {
                         currentScreen = TvScreen.ChatList
@@ -58,9 +68,6 @@ class MainActivity : ComponentActivity() {
                     else -> Unit
                 }
             }
-
-            val chatListState = androidx.compose.foundation.lazy.rememberLazyListState()
-            var lastSelectedChatId by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<Long?>(null) }
 
             when (val screen = currentScreen) {
                 is TvScreen.Auth -> {
@@ -74,6 +81,7 @@ class MainActivity : ComponentActivity() {
                     TvChatListScreen(
                         onSelectChat = { chatId, title ->
                             lastSelectedChatId = chatId
+                            chatBackStack.clear()
                             currentScreen = TvScreen.ChatDetail(chatId, title)
                         },
                         onOpenAccountSettings = {
@@ -88,7 +96,19 @@ class MainActivity : ComponentActivity() {
                         chatId = screen.chatId,
                         chatTitle = screen.chatTitle,
                         onBack = {
-                            currentScreen = TvScreen.ChatList
+                            if (chatBackStack.isNotEmpty()) {
+                                val previousChat = chatBackStack.removeAt(chatBackStack.lastIndex)
+                                currentScreen = previousChat
+                            } else {
+                                currentScreen = TvScreen.ChatList
+                            }
+                        },
+                        onOpenChat = { targetChatId, targetTitle ->
+                            if (targetChatId != screen.chatId) {
+                                chatBackStack.add(screen)
+                                lastSelectedChatId = targetChatId
+                                currentScreen = TvScreen.ChatDetail(targetChatId, targetTitle)
+                            }
                         }
                     )
                 }

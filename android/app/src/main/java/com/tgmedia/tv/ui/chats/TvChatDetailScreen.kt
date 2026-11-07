@@ -1,8 +1,13 @@
 package com.tgmedia.tv.ui.chats
 
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
+import android.net.Uri
 import android.util.Log
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -38,9 +43,13 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -71,6 +80,113 @@ enum class MessageMediaType {
     DOCUMENT
 }
 
+/**
+ * Извлеченная из сообщения или профиля ссылка (внутренняя Telegram или внешняя веб-ссылка).
+ */
+data class ExtractedLink(
+    val url: String,
+    val label: String,
+    val isInternalTelegram: Boolean
+)
+
+/**
+ * Парсер внутренних (@username, t.me/..., tg://...) и внешних (https://...) ссылок
+ * с поддержкой TDLib TextEntity (включая скрытые ссылки TextEntityTypeTextUrl) и подсветкой в тексте.
+ */
+object LinkExtractor {
+    private val rawLinkRegex = Regex(
+        """(https?://[^\s<>"]+|tg://[^\s<>"]+|(?:t\.me|telegram\.me|telegram\.dog)/[a-zA-Z0-9_+/=?&-]+|@[a-zA-Z0-9_]{4,32})""",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun isInternalTelegramLink(rawUrl: String): Boolean {
+        val u = rawUrl.trim().lowercase()
+        return u.startsWith("@") ||
+                u.startsWith("tg://") ||
+                u.startsWith("t.me/") ||
+                u.startsWith("https://t.me/") ||
+                u.startsWith("http://t.me/") ||
+                u.startsWith("https://telegram.me/") ||
+                u.startsWith("https://telegram.dog/")
+    }
+
+    private fun cleanPunctuation(raw: String): String {
+        return raw.trimEnd('.', ',', ';', '!', '?', ')', ']', '}', '"', '\'')
+    }
+
+    fun extractLinks(text: String, entities: Array<TdApi.TextEntity>? = null): List<ExtractedLink> {
+        val result = LinkedHashMap<String, ExtractedLink>()
+
+        // 1. Сначала извлекаем сущности TDLib (включая скрытые ссылки TextEntityTypeTextUrl)
+        entities?.forEach { entity ->
+            val start = entity.offset.coerceAtLeast(0)
+            val end = (entity.offset + entity.length).coerceAtMost(text.length)
+            val snippet = if (start < end) text.substring(start, end) else ""
+
+            when (val t = entity.type) {
+                is TdApi.TextEntityTypeTextUrl -> {
+                    val target = cleanPunctuation(t.url)
+                    if (target.isNotBlank()) {
+                        val isInternal = isInternalTelegramLink(target)
+                        val display = if (snippet.isNotBlank() && snippet != target) {
+                            "${snippet.take(28)} (${target.take(34)})"
+                        } else {
+                            target.take(45)
+                        }
+                        result.putIfAbsent(target.lowercase(), ExtractedLink(target, display, isInternal))
+                    }
+                }
+                is TdApi.TextEntityTypeUrl -> {
+                    val target = cleanPunctuation(snippet)
+                    if (target.isNotBlank()) {
+                        val isInternal = isInternalTelegramLink(target)
+                        result.putIfAbsent(target.lowercase(), ExtractedLink(target, target.take(45), isInternal))
+                    }
+                }
+                is TdApi.TextEntityTypeMention -> {
+                    val target = cleanPunctuation(snippet)
+                    if (target.startsWith("@") && target.length > 1) {
+                        result.putIfAbsent(target.lowercase(), ExtractedLink(target, target, true))
+                    }
+                }
+                else -> Unit
+            }
+        }
+
+        // 2. Дополнительно ищем ссылки и @упоминания регулярным выражением по тексту
+        rawLinkRegex.findAll(text).forEach { match ->
+            val target = cleanPunctuation(match.value)
+            if (target.isNotBlank()) {
+                val isInternal = isInternalTelegramLink(target)
+                result.putIfAbsent(target.lowercase(), ExtractedLink(target, target.take(45), isInternal))
+            }
+        }
+
+        return result.values.toList()
+    }
+
+    fun buildHighlightedText(text: String): AnnotatedString {
+        return buildAnnotatedString {
+            append(text)
+            rawLinkRegex.findAll(text).forEach { match ->
+                val cleaned = cleanPunctuation(match.value)
+                val endIdx = match.range.first + cleaned.length
+                if (endIdx <= text.length) {
+                    addStyle(
+                        style = SpanStyle(
+                            color = Color(0xFF38BDF8),
+                            fontWeight = FontWeight.SemiBold,
+                            textDecoration = TextDecoration.Underline
+                        ),
+                        start = match.range.first,
+                        end = endIdx
+                    )
+                }
+            }
+        }
+    }
+}
+
 data class UiMessage(
     val id: Long,
     val senderName: String,
@@ -80,11 +196,12 @@ data class UiMessage(
     val mediaType: MessageMediaType = MessageMediaType.NONE,
     val fileId: Int? = null,
     val fullFileId: Int? = null,
-    val mediaInfo: String = ""
+    val mediaInfo: String = "",
+    val links: List<ExtractedLink> = emptyList()
 )
 
 /**
- * Преобразование сообщения TDLib в отображаемую модель UI с поддержкой медиа.
+ * Преобразование сообщения TDLib в отображаемую модель UI с поддержкой медиа и извлечением ссылок.
  */
 fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
     val timeFormatted = try {
@@ -98,12 +215,17 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
     var targetFileId: Int? = null
     var targetFullFileId: Int? = null
     var mInfo = ""
+    var formattedEntities: Array<TdApi.TextEntity>? = null
     val tdManager = try { TdLibManager.getInstance() } catch (_: Throwable) { null }
 
     val contentText = when (val c = this.content) {
-        is TdApi.MessageText -> c.text.text
+        is TdApi.MessageText -> {
+            formattedEntities = c.text.entities
+            c.text.text
+        }
         is TdApi.MessagePhoto -> {
             mType = MessageMediaType.PHOTO
+            formattedEntities = c.caption.entities
             val bestSize = c.photo.sizes.maxByOrNull { it.width * it.height }
             val thumbSize = c.photo.sizes.firstOrNull { it.type in listOf("m", "x", "s") } ?: bestSize
             targetFileId = thumbSize?.photo?.id ?: bestSize?.photo?.id
@@ -126,6 +248,7 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
         }
         is TdApi.MessageVideo -> {
             mType = MessageMediaType.VIDEO
+            formattedEntities = c.caption.entities
             targetFileId = c.video.thumbnail?.file?.id ?: c.video.video.id
             targetFullFileId = c.video.video.id
 
@@ -171,6 +294,7 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
         }
         is TdApi.MessageAudio -> {
             mType = MessageMediaType.AUDIO
+            formattedEntities = c.caption.entities
             targetFileId = c.audio.audio.id
             targetFullFileId = c.audio.audio.id
 
@@ -189,6 +313,7 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
         }
         is TdApi.MessageVoiceNote -> {
             mType = MessageMediaType.VOICE
+            formattedEntities = c.caption.entities
             targetFileId = c.voiceNote.voice.id
             targetFullFileId = c.voiceNote.voice.id
 
@@ -205,6 +330,7 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
         }
         is TdApi.MessageDocument -> {
             mType = MessageMediaType.DOCUMENT
+            formattedEntities = c.caption.entities
             targetFileId = c.document.thumbnail?.file?.id ?: c.document.document.id
             targetFullFileId = c.document.document.id
 
@@ -220,6 +346,7 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
         }
         is TdApi.MessageAnimation -> {
             mType = MessageMediaType.VIDEO
+            formattedEntities = c.caption.entities
             targetFileId = c.animation.thumbnail?.file?.id ?: c.animation.animation.id
             targetFullFileId = c.animation.animation.id
             if (c.caption.text.isNotBlank()) "GIF: ${c.caption.text}" else "GIF анимация"
@@ -244,16 +371,20 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
         else -> "Сообщение"
     }
 
+    val finalText = contentText.ifBlank { "Сообщение" }
+    val extractedLinks = LinkExtractor.extractLinks(finalText, formattedEntities)
+
     return UiMessage(
         id = this.id,
         senderName = if (this.isOutgoing) "Вы" else senderTitle,
-        text = contentText.ifBlank { "Сообщение" },
+        text = finalText,
         time = timeFormatted,
         isOutgoing = this.isOutgoing,
         mediaType = mType,
         fileId = targetFileId,
         fullFileId = targetFullFileId,
-        mediaInfo = mInfo
+        mediaInfo = mInfo,
+        links = extractedLinks
     )
 }
 
@@ -265,16 +396,19 @@ fun TdApi.Message.toUiMessage(senderTitle: String): UiMessage {
  * 4. Загрузка и просмотр медиа (полноэкранные фото, видеопроигрыватель, аудиоплеер, стикеры) с учетом пользовательских настроек автозагрузки.
  * 5. Яркое, контрастное выделение профиля и названия чата в шапке при наведении курсора пульта.
  * 6. Открытие клавиатуры строго по нажатию кнопки ОК.
+ * 7. Полная обработка внутренних (@username, t.me/..., приглашения, посты) и внешних (https://...) ссылок в сообщениях и профилях.
  */
 @Composable
 fun TvChatDetailScreen(
     chatId: Long,
     chatTitle: String,
     onBack: () -> Unit,
+    onOpenChat: (chatId: Long, chatTitle: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val tdLibManager = remember { TdLibManager.getInstance() }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val downloadedFiles by tdLibManager.fileDownloadedState.collectAsState()
     val isMediaAutoDownloadEnabled by tdLibManager.isMediaAutoDownloadEnabled.collectAsState()
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -284,8 +418,9 @@ fun TvChatDetailScreen(
     var isLoadingMoreOlder by remember { mutableStateOf(false) }
     var hasMoreOlderMessages by remember { mutableStateOf(true) }
 
-    // Проверка прав на отправку сообщений в чат
+    // Проверка прав на отправку сообщений и возможность подписки на публичный канал
     var canSendMessages by remember { mutableStateOf(false) }
+    var canJoinCurrentChat by remember { mutableStateOf(false) }
 
     // Профиль чата
     var showProfileDialog by remember { mutableStateOf(false) }
@@ -301,12 +436,44 @@ fun TvChatDetailScreen(
     // Просмотр/воспроизведение видео через ExoPlayer
     var selectedVideoMessage by remember { mutableStateOf<UiMessage?>(null) }
 
-    // Меню действий с сообщением (Ответить, Переслать, Удалить)
+    // Встроенный ТВ-браузер для внешних веб-ссылок
+    var activeExternalWebUrl by remember { mutableStateOf<String?>(null) }
+
+    // Меню действий с сообщением (Ссылки, Ответить, Переслать, Удалить)
     var actionTargetMessage by remember { mutableStateOf<UiMessage?>(null) }
     var replyingToMessage by remember { mutableStateOf<UiMessage?>(null) }
     var forwardingMessage by remember { mutableStateOf<UiMessage?>(null) }
     var deletingMessage by remember { mutableStateOf<UiMessage?>(null) }
     var toastNotification by remember { mutableStateOf<String?>(null) }
+
+    // Обработчик клика по любой внутренней или внешней ссылке
+    fun handleLinkClick(rawUrl: String) {
+        val target = rawUrl.trim()
+        if (target.isEmpty()) return
+        scope.launch {
+            toastNotification = "Переход по ссылке: $target..."
+            when (val res = tdLibManager.resolveAndHandleLink(target)) {
+                is TdLibManager.ResolvedLinkAction.OpenChat -> {
+                    actionTargetMessage = null
+                    selectedFullMessage = null
+                    showProfileDialog = false
+                    toastNotification = null
+                    onOpenChat(res.chatId, res.chatTitle)
+                }
+                is TdLibManager.ResolvedLinkAction.ProxyImported -> {
+                    toastNotification = res.message
+                }
+                is TdLibManager.ResolvedLinkAction.OpenExternalWeb -> {
+                    actionTargetMessage = null
+                    toastNotification = null
+                    activeExternalWebUrl = res.url
+                }
+                is TdLibManager.ResolvedLinkAction.Error -> {
+                    toastNotification = res.message
+                }
+            }
+        }
+    }
 
     // Воспроизведение аудио/голосовых сообщений
     var playingAudioMsgId by remember { mutableStateOf<Long?>(null) }
@@ -323,12 +490,14 @@ fun TvChatDetailScreen(
 
     // Перехват кнопки НАЗАД на пульте ДУ: закрывает активные диалоги перед выходом из экрана
     BackHandler(
-        enabled = selectedPhotoMessage != null || selectedVideoMessage != null ||
-                selectedFullMessage != null || showProfileDialog ||
-                actionTargetMessage != null || forwardingMessage != null ||
-                deletingMessage != null || replyingToMessage != null
+        enabled = activeExternalWebUrl != null || selectedPhotoMessage != null ||
+                selectedVideoMessage != null || selectedFullMessage != null ||
+                showProfileDialog || actionTargetMessage != null ||
+                forwardingMessage != null || deletingMessage != null ||
+                replyingToMessage != null
     ) {
         when {
+            activeExternalWebUrl != null -> activeExternalWebUrl = null
             selectedPhotoMessage != null -> selectedPhotoMessage = null
             selectedVideoMessage != null -> selectedVideoMessage = null
             selectedFullMessage != null -> selectedFullMessage = null
@@ -361,9 +530,10 @@ fun TvChatDetailScreen(
         tdLibManager.getChatPhotoPath(chatObj)
     }
 
-    // Загрузка прав на отправку сообщений
+    // Загрузка прав на отправку сообщений и статуса подписки
     LaunchedEffect(chatId, chatObj) {
         canSendMessages = tdLibManager.canSendMessagesInChat(chatObj)
+        canJoinCurrentChat = tdLibManager.canJoinChat(chatObj)
     }
 
     // Загрузка более старых сообщений (пагинация вверх с официальным лимитом 30 сообщений)
@@ -510,13 +680,24 @@ fun TvChatDetailScreen(
                             messagesList = messagesList.map { existing ->
                                 if (existing.id == update.messageId) {
                                     when (val c = update.newContent) {
-                                        is TdApi.MessageText -> existing.copy(text = c.text.text)
-                                        is TdApi.MessagePhoto -> existing.copy(
-                                            text = if (c.caption.text.isNotBlank()) c.caption.text else "🖼️ Фотография"
+                                        is TdApi.MessageText -> existing.copy(
+                                            text = c.text.text,
+                                            links = LinkExtractor.extractLinks(c.text.text, c.text.entities)
                                         )
-                                        is TdApi.MessageVideo -> existing.copy(
-                                            text = if (c.caption.text.isNotBlank()) c.caption.text else "📹 Видео"
-                                        )
+                                        is TdApi.MessagePhoto -> {
+                                            val newText = if (c.caption.text.isNotBlank()) c.caption.text else "🖼️ Фотография"
+                                            existing.copy(
+                                                text = newText,
+                                                links = LinkExtractor.extractLinks(c.caption.text, c.caption.entities)
+                                            )
+                                        }
+                                        is TdApi.MessageVideo -> {
+                                            val newText = if (c.caption.text.isNotBlank()) c.caption.text else "📹 Видео"
+                                            existing.copy(
+                                                text = newText,
+                                                links = LinkExtractor.extractLinks(c.caption.text, c.caption.entities)
+                                            )
+                                        }
                                         else -> existing
                                     }
                                 } else existing
@@ -753,8 +934,49 @@ fun TvChatDetailScreen(
                 }
             }
 
-            // Правый блок шапки: кнопка быстрого перехода к вводу сообщения (если разрешено)
+            // Правый блок шапки: кнопка подписки (для новых каналов) и быстрого перехода к вводу сообщения
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (canJoinCurrentChat) {
+                    var isJoinFocused by remember { mutableStateOf(false) }
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val res = tdLibManager.joinChat(chatId)
+                                if (res.isSuccess) {
+                                    canJoinCurrentChat = false
+                                    toastNotification = "✓ Вы подписались на $chatTitle"
+                                } else {
+                                    toastNotification = "Не удалось подписаться: ${res.exceptionOrNull()?.message ?: ""}"
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isJoinFocused) Color(0xFF10B981) else Color(0xFF064E3B)
+                        ),
+                        modifier = Modifier
+                            .onFocusChanged { isJoinFocused = it.isFocused }
+                            .border(
+                                width = if (isJoinFocused) 3.dp else 1.5.dp,
+                                color = if (isJoinFocused) Color.White else Color(0xFF10B981),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                    ) {
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = null,
+                            tint = if (isJoinFocused) Color.Black else Color(0xFF34D399),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            "Подписаться",
+                            fontSize = 13.sp,
+                            color = if (isJoinFocused) Color.Black else Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
                 if (canSendMessages) {
                     var isWriteFocused by remember { mutableStateOf(false) }
                     Button(
@@ -1138,14 +1360,89 @@ fun TvChatDetailScreen(
                                     }
                                 }
 
+                                val highlightedText = remember(msg.text) {
+                                    LinkExtractor.buildHighlightedText(msg.text)
+                                }
+
                                 Text(
-                                    text = msg.text,
+                                    text = highlightedText,
                                     fontSize = 15.sp,
                                     color = Color.White,
                                     lineHeight = 22.sp,
                                     maxLines = 8,
                                     overflow = TextOverflow.Ellipsis
                                 )
+
+                                // Интерактивные кнопки ссылок в сообщении (доступны для D-Pad навигации и в меню действий)
+                                if (msg.links.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        msg.links.take(4).forEach { linkItem ->
+                                            var isLinkChipFocused by remember { mutableStateOf(false) }
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(
+                                                        if (isLinkChipFocused) Color(0xFF38BDF8)
+                                                        else if (linkItem.isInternalTelegram) Color(0xFF0B2942)
+                                                        else Color(0xFF162033)
+                                                    )
+                                                    .border(
+                                                        width = if (isLinkChipFocused) 2.5.dp else 1.dp,
+                                                        color = if (isLinkChipFocused) Color.White else Color(0xFF0284C7),
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    )
+                                                    .onFocusChanged { isLinkChipFocused = it.isFocused }
+                                                    .clickable { handleLinkClick(linkItem.url) }
+                                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                                            ) {
+                                                Text(
+                                                    text = if (linkItem.isInternalTelegram) "✈️" else "🌐",
+                                                    fontSize = 13.sp
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = linkItem.displayLabel,
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isLinkChipFocused) Color.Black else Color(0xFF7DD3FC),
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    if (linkItem.displayLabel != linkItem.url) {
+                                                        Text(
+                                                            text = linkItem.url,
+                                                            fontSize = 10.sp,
+                                                            color = if (isLinkChipFocused) Color(0xFF0F172A) else Color(0xFF94A3B8),
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = if (linkItem.isInternalTelegram) "Открыть в TG (ОК)" else "Открыть (ОК)",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = if (isLinkChipFocused) Color.Black else Color(0xFF38BDF8)
+                                                )
+                                            }
+                                        }
+                                        if (msg.links.size > 4) {
+                                            Text(
+                                                text = "+ ещё ссылок (${msg.links.size - 4}) — нажмите ОК на сообщении для полного списка",
+                                                fontSize = 11.sp,
+                                                color = Color(0xFF7DD3FC)
+                                            )
+                                        }
+                                    }
+                                }
 
                                 if (isLongMessage || msg.mediaType == MessageMediaType.PHOTO || msg.mediaType == MessageMediaType.VIDEO) {
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -1510,12 +1807,72 @@ fun TvChatDetailScreen(
                             .verticalScroll(modalScrollState)
                             .padding(22.dp)
                     ) {
-                        Text(
-                            text = fullMsg.text,
-                            color = Color.White,
-                            fontSize = 17.sp,
-                            lineHeight = 26.sp
-                        )
+                        Column {
+                            Text(
+                                text = remember(fullMsg.text) { LinkExtractor.buildHighlightedText(fullMsg.text) },
+                                color = Color.White,
+                                fontSize = 17.sp,
+                                lineHeight = 26.sp
+                            )
+
+                            if (fullMsg.links.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(18.dp))
+                                Divider(color = Color(0xFF1E293B))
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = "Ссылки в сообщении:",
+                                    color = Color(0xFF38BDF8),
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    fullMsg.links.forEach { linkItem ->
+                                        var isModalLinkFocused by remember { mutableStateOf(false) }
+                                        Button(
+                                            onClick = {
+                                                selectedFullMessage = null
+                                                handleLinkClick(linkItem.url)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (isModalLinkFocused) Color(0xFF38BDF8) else Color(0xFF162238)
+                                            ),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .onFocusChanged { isModalLinkFocused = it.isFocused }
+                                                .border(
+                                                    width = if (isModalLinkFocused) 2.5.dp else 1.dp,
+                                                    color = if (isModalLinkFocused) Color.White else Color(0xFF0284C7),
+                                                    shape = RoundedCornerShape(10.dp)
+                                                )
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(
+                                                    text = "${if (linkItem.isInternalTelegram) "✈️" else "🌐"} ${linkItem.displayLabel} (${linkItem.url})",
+                                                    color = if (isModalLinkFocused) Color.Black else Color.White,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = "Перейти (ОК)",
+                                                    color = if (isModalLinkFocused) Color.Black else Color(0xFF38BDF8),
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.ExtraBold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1884,8 +2241,57 @@ fun TvChatDetailScreen(
 
                     Column(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp)
+                            .verticalScroll(rememberScrollState())
                     ) {
+                        // Ссылки из сообщения (внутренние Telegram и внешние веб-ссылки)
+                        if (targetMsg.links.isNotEmpty()) {
+                            Text(
+                                text = "Ссылки в сообщении (${targetMsg.links.size}):",
+                                color = Color(0xFF38BDF8),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            targetMsg.links.forEach { linkItem ->
+                                var isLinkActFocused by remember { mutableStateOf(false) }
+                                Button(
+                                    onClick = {
+                                        val urlToOpen = linkItem.url
+                                        actionTargetMessage = null
+                                        handleLinkClick(urlToOpen)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isLinkActFocused) Color(0xFF38BDF8) else Color(0xFF102A45)
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .onFocusChanged { isLinkActFocused = it.isFocused }
+                                        .border(
+                                            width = if (isLinkActFocused) 2.5.dp else 1.dp,
+                                            color = if (isLinkActFocused) Color.White else Color(0xFF0284C7),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                ) {
+                                    Text(
+                                        text = if (linkItem.isInternalTelegram) {
+                                            "✈️ Перейти в Telegram: ${linkItem.displayLabel}"
+                                        } else {
+                                            "🌐 Открыть ссылку: ${linkItem.displayLabel}"
+                                        },
+                                        color = if (isLinkActFocused) Color.Black else Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Divider(color = Color(0xFF1E293B))
+                        }
+
                         // Действие: Просмотр фото в исходном HD качестве
                         if (targetMsg.mediaType == MessageMediaType.PHOTO) {
                             var isPhotoActFocused by remember { mutableStateOf(false) }
@@ -2482,52 +2888,160 @@ fun TvChatDetailScreen(
 
                             Spacer(modifier = Modifier.height(20.dp))
 
-                            // Блоки с деталями профиля
+                            // Кнопка подписки на канал/группу прямо из профиля (если ещё не подписаны)
+                            if (canJoinCurrentChat) {
+                                var isProfileJoinFocused by remember { mutableStateOf(false) }
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            val res = tdLibManager.joinChat(chatId)
+                                            if (res.isSuccess) {
+                                                canJoinCurrentChat = false
+                                                toastNotification = "✓ Вы подписались на $chatTitle"
+                                            } else {
+                                                toastNotification = "Не удалось подписаться: ${res.exceptionOrNull()?.message ?: ""}"
+                                            }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isProfileJoinFocused) Color(0xFF10B981) else Color(0xFF064E3B)
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .onFocusChanged { isProfileJoinFocused = it.isFocused }
+                                        .border(
+                                            width = if (isProfileJoinFocused) 3.dp else 1.5.dp,
+                                            color = if (isProfileJoinFocused) Color.White else Color(0xFF10B981),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                ) {
+                                    Icon(
+                                        Icons.Default.Add,
+                                        contentDescription = null,
+                                        tint = if (isProfileJoinFocused) Color.Black else Color(0xFF34D399)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Подписаться / Вступить в чат (ОК)",
+                                        color = if (isProfileJoinFocused) Color.Black else Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(14.dp))
+                            }
+
+                            // Блоки с деталями профиля и интерактивными ссылками
+                            val descriptionText = details?.description?.ifBlank { "" }.orEmpty()
+                            val profileDescriptionLinks = remember(descriptionText) {
+                                LinkExtractor.extractLinks(descriptionText)
+                            }
+
                             Column(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
                                 if (!details?.username.isNullOrBlank()) {
+                                    val uname = details?.username.orEmpty().removePrefix("@")
+                                    var isUsernameCardFocused by remember { mutableStateOf(false) }
                                     Card(
                                         shape = RoundedCornerShape(12.dp),
-                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF181F30)),
-                                        modifier = Modifier.fillMaxWidth()
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (isUsernameCardFocused) Color(0xFF0284C7) else Color(0xFF181F30)
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .border(
+                                                width = if (isUsernameCardFocused) 2.5.dp else 1.dp,
+                                                color = if (isUsernameCardFocused) Color.White else Color(0xFF26324D),
+                                                shape = RoundedCornerShape(12.dp)
+                                            )
+                                            .onFocusChanged { isUsernameCardFocused = it.isFocused }
+                                            .clickable {
+                                                showProfileDialog = false
+                                                handleLinkClick("https://t.me/$uname")
+                                            }
                                     ) {
-                                        Column(modifier = Modifier.padding(14.dp)) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(14.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "Имя пользователя / Ссылка:",
+                                                    color = if (isUsernameCardFocused) Color(0xFFE0F2FE) else Color(0xFF38BDF8),
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text(
+                                                    text = "@$uname (https://t.me/$uname)",
+                                                    color = Color.White,
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
                                             Text(
-                                                text = "Имя пользователя / Ссылка:",
-                                                color = Color(0xFF38BDF8),
+                                                text = "✈️ Открыть (ОК)",
+                                                color = if (isUsernameCardFocused) Color.White else Color(0xFF38BDF8),
                                                 fontSize = 12.sp,
                                                 fontWeight = FontWeight.Bold
-                                            )
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Text(
-                                                text = "@${details?.username} (https://t.me/${details?.username})",
-                                                color = Color.White,
-                                                fontSize = 14.sp
                                             )
                                         }
                                     }
                                 }
 
                                 if (!details?.inviteLink.isNullOrBlank()) {
+                                    val invLink = details?.inviteLink.orEmpty()
+                                    var isInviteCardFocused by remember { mutableStateOf(false) }
                                     Card(
                                         shape = RoundedCornerShape(12.dp),
-                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF181F30)),
-                                        modifier = Modifier.fillMaxWidth()
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (isInviteCardFocused) Color(0xFF0284C7) else Color(0xFF181F30)
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .border(
+                                                width = if (isInviteCardFocused) 2.5.dp else 1.dp,
+                                                color = if (isInviteCardFocused) Color.White else Color(0xFF26324D),
+                                                shape = RoundedCornerShape(12.dp)
+                                            )
+                                            .onFocusChanged { isInviteCardFocused = it.isFocused }
+                                            .clickable {
+                                                showProfileDialog = false
+                                                handleLinkClick(invLink)
+                                            }
                                     ) {
-                                        Column(modifier = Modifier.padding(14.dp)) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(14.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "Ссылка-приглашение:",
+                                                    color = if (isInviteCardFocused) Color(0xFFE0F2FE) else Color(0xFF38BDF8),
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text(
+                                                    text = invLink,
+                                                    color = Color.White,
+                                                    fontSize = 14.sp
+                                                )
+                                            }
                                             Text(
-                                                text = "Ссылка-приглашение:",
-                                                color = Color(0xFF38BDF8),
+                                                text = "✈️ Перейти (ОК)",
+                                                color = if (isInviteCardFocused) Color.White else Color(0xFF38BDF8),
                                                 fontSize = 12.sp,
                                                 fontWeight = FontWeight.Bold
-                                            )
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Text(
-                                                text = details?.inviteLink.orEmpty(),
-                                                color = Color.White,
-                                                fontSize = 14.sp
                                             )
                                         }
                                     }
@@ -2569,17 +3083,267 @@ fun TvChatDetailScreen(
                                             fontWeight = FontWeight.Bold
                                         )
                                         Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            text = details?.description?.ifBlank { "Описание не указано" } ?: "Описание не указано",
-                                            color = Color.White,
-                                            fontSize = 14.sp,
-                                            lineHeight = 22.sp
-                                        )
+                                        if (descriptionText.isNotBlank()) {
+                                            Text(
+                                                text = remember(descriptionText) { LinkExtractor.buildHighlightedText(descriptionText) },
+                                                color = Color.White,
+                                                fontSize = 14.sp,
+                                                lineHeight = 22.sp
+                                            )
+                                        } else {
+                                            Text(
+                                                text = "Описание не указано",
+                                                color = Color.Gray,
+                                                fontSize = 14.sp
+                                            )
+                                        }
+
+                                        if (profileDescriptionLinks.isNotEmpty()) {
+                                            Spacer(modifier = Modifier.height(12.dp))
+                                            Divider(color = Color(0xFF26324D))
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                            Text(
+                                                text = "Ссылки из описания профиля (нажмите ОК для перехода):",
+                                                color = Color(0xFF38BDF8),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                profileDescriptionLinks.forEach { linkItem ->
+                                                    var isProfLinkFocused by remember { mutableStateOf(false) }
+                                                    Button(
+                                                        onClick = {
+                                                            showProfileDialog = false
+                                                            handleLinkClick(linkItem.url)
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(
+                                                            containerColor = if (isProfLinkFocused) Color(0xFF38BDF8) else Color(0xFF102A45)
+                                                        ),
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .onFocusChanged { isProfLinkFocused = it.isFocused }
+                                                            .border(
+                                                                width = if (isProfLinkFocused) 2.5.dp else 1.dp,
+                                                                color = if (isProfLinkFocused) Color.White else Color(0xFF0284C7),
+                                                                shape = RoundedCornerShape(10.dp)
+                                                            )
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Text(
+                                                                text = "${if (linkItem.isInternalTelegram) "✈️" else "🌐"} ${linkItem.displayLabel}",
+                                                                color = if (isProfLinkFocused) Color.Black else Color.White,
+                                                                fontSize = 13.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                                modifier = Modifier.weight(1f)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(8.dp))
+                                                            Text(
+                                                                text = if (linkItem.isInternalTelegram) "Открыть в TG (ОК)" else "Открыть сайт (ОК)",
+                                                                color = if (isProfLinkFocused) Color.Black else Color(0xFF38BDF8),
+                                                                fontSize = 11.sp,
+                                                                fontWeight = FontWeight.ExtraBold
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // 6. Встроенный ТВ-браузер для внешних веб-ссылок (с поддержкой пульта ДУ и открытия в системном браузере)
+    activeExternalWebUrl?.let { webUrl ->
+        val context = LocalContext.current
+        var currentLoadedUrl by remember(webUrl) { mutableStateOf(webUrl) }
+        var pageTitle by remember(webUrl) { mutableStateOf("Загрузка страницы...") }
+        var webViewInstance by remember { mutableStateOf<WebView?>(null) }
+
+        Dialog(
+            onDismissRequest = { activeExternalWebUrl = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0E131F)),
+                modifier = Modifier
+                    .fillMaxWidth(0.94f)
+                    .fillMaxHeight(0.92f)
+                    .border(2.dp, Color(0xFF38BDF8), RoundedCornerShape(18.dp))
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Верхняя панель ТВ-браузера
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF13192B))
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = pageTitle,
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = currentLoadedUrl,
+                                color = Color(0xFF38BDF8),
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            var isScrollUpFocused by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = { webViewInstance?.scrollBy(0, -360) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isScrollUpFocused) Color(0xFF38BDF8) else Color(0xFF1E293B)
+                                ),
+                                modifier = Modifier
+                                    .onFocusChanged { isScrollUpFocused = it.isFocused }
+                                    .border(
+                                        width = if (isScrollUpFocused) 2.5.dp else 1.dp,
+                                        color = if (isScrollUpFocused) Color.White else Color(0xFF334155),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                            ) {
+                                Text("▲ Вверх", color = if (isScrollUpFocused) Color.Black else Color.White, fontSize = 12.sp)
+                            }
+
+                            var isScrollDownFocused by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = { webViewInstance?.scrollBy(0, 360) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isScrollDownFocused) Color(0xFF38BDF8) else Color(0xFF1E293B)
+                                ),
+                                modifier = Modifier
+                                    .onFocusChanged { isScrollDownFocused = it.isFocused }
+                                    .border(
+                                        width = if (isScrollDownFocused) 2.5.dp else 1.dp,
+                                        color = if (isScrollDownFocused) Color.White else Color(0xFF334155),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                            ) {
+                                Text("▼ Вниз", color = if (isScrollDownFocused) Color.Black else Color.White, fontSize = 12.sp)
+                            }
+
+                            var isExtBrowserFocused by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentLoadedUrl)).apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
+                                        context.startActivity(intent)
+                                    } catch (e: Exception) {
+                                        toastNotification = "Системный браузер не найден на ТВ"
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isExtBrowserFocused) Color(0xFF38BDF8) else Color(0xFF1E293B)
+                                ),
+                                modifier = Modifier
+                                    .onFocusChanged { isExtBrowserFocused = it.isFocused }
+                                    .border(
+                                        width = if (isExtBrowserFocused) 2.5.dp else 1.dp,
+                                        color = if (isExtBrowserFocused) Color.White else Color(0xFF334155),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                            ) {
+                                Text(
+                                    "🌐 Браузер ТВ",
+                                    color = if (isExtBrowserFocused) Color.Black else Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            var isCloseWebFocused by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = { activeExternalWebUrl = null },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isCloseWebFocused) Color(0xFFEF4444) else Color(0xFF26334D)
+                                ),
+                                modifier = Modifier
+                                    .onFocusChanged { isCloseWebFocused = it.isFocused }
+                                    .border(
+                                        width = if (isCloseWebFocused) 2.5.dp else 1.dp,
+                                        color = if (isCloseWebFocused) Color.White else Color(0xFF3B4D73),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                            ) {
+                                Text(
+                                    "Закрыть (ОК)",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    // Область отображения веб-страницы с перехватом t.me / tg:// ссылок
+                    AndroidView(
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.loadWithOverviewMode = true
+                                settings.useWideViewPort = true
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        super.onPageFinished(view, url)
+                                        if (!url.isNullOrBlank()) currentLoadedUrl = url
+                                        val t = view?.title
+                                        if (!t.isNullOrBlank()) pageTitle = t
+                                    }
+
+                                    override fun shouldOverrideUrlLoading(
+                                        view: WebView?,
+                                        request: WebResourceRequest?
+                                    ): Boolean {
+                                        val clickedUrl = request?.url?.toString() ?: return false
+                                        if (LinkExtractor.isTelegramInternalUrl(clickedUrl)) {
+                                            activeExternalWebUrl = null
+                                            handleLinkClick(clickedUrl)
+                                            return true
+                                        }
+                                        return false
+                                    }
+                                }
+                                loadUrl(webUrl)
+                                webViewInstance = this
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    )
                 }
             }
         }

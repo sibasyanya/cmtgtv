@@ -60,7 +60,7 @@ export const INITIAL_MESSAGES: Record<string, ChatMessageItem[]> = {
       chatId: 'chat-1',
       senderName: 'Cybermasters News & Tech',
       isOutgoing: false,
-      text: 'Добро пожаловать в официальный канал Cybermasters TGTV! Здесь публикуются ключевые обновления клиента Telegram для Android TV.',
+      text: 'Добро пожаловать в официальный канал @cybermasters_tv! Документация движка: https://core.telegram.org/tdlib и наш киноканал https://t.me/kino4k_hdr',
       time: '11:20',
     },
     {
@@ -68,7 +68,7 @@ export const INITIAL_MESSAGES: Record<string, ChatMessageItem[]> = {
       chatId: 'chat-1',
       senderName: 'Cybermasters News & Tech',
       isOutgoing: false,
-      text: 'Вышел новый релиз клиента для Android TV с поддержкой чатов, каналов и полноценной отправки сообщений с пульта ДУ!',
+      text: 'Вышел релиз CMTGTV v1.0.45 для Android TV: глобальный поиск по чатам/каналам/сообщениям и интерактивные внутренние и внешние ссылки в сообщениях и профилях!',
       time: '12:45',
     }
   ],
@@ -78,7 +78,7 @@ export const INITIAL_MESSAGES: Record<string, ChatMessageItem[]> = {
       chatId: 'chat-3',
       senderName: 'Алексей',
       isOutgoing: false,
-      text: 'Привет! Как продвигается запуск клиента на телевизоре?',
+      text: 'Привет! Посмотри обсуждение в группе @smart_tv_dev и репозиторий https://github.com/tdlib/td',
       time: '10:10',
     },
     {
@@ -86,7 +86,7 @@ export const INITIAL_MESSAGES: Record<string, ChatMessageItem[]> = {
       chatId: 'chat-3',
       senderName: 'Вы',
       isOutgoing: true,
-      text: 'Привет! Собрали TDLib Manager, авторизацию по QR-коду и просмотр каналов.',
+      text: 'Привет! Добавили глобальный поиск TDLib и переходы по ссылкам прямо с пульта ТВ.',
       time: '10:12',
     },
     {
@@ -99,3 +99,4 @@ export const INITIAL_MESSAGES: Record<string, ChatMessageItem[]> = {
     }
   ]
 };
+

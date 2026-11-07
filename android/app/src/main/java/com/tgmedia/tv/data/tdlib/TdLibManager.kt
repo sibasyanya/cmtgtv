@@ -1651,4 +1651,347 @@ class TdLibManager private constructor() {
             ?.putBoolean("auto_download_media", enabled)
             ?.apply()
     }
+
+    // ============================================================================
+    // Глобальный поиск (Чаты, Публичные каналы/группы, Сообщения)
+    // ============================================================================
+
+    data class GlobalSearchMessageItem(
+        val message: TdApi.Message,
+        val chatId: Long,
+        val chatTitle: String,
+        val senderName: String
+    )
+
+    data class GlobalSearchResult(
+        val localChats: List<TdApi.Chat> = emptyList(),
+        val publicChats: List<TdApi.Chat> = emptyList(),
+        val messages: List<GlobalSearchMessageItem> = emptyList()
+    )
+
+    /**
+     * Выполнение глобального поиска в Telegram:
+     * 1. Локальные и синхронизированные чаты пользователя (SearchChats + SearchChatsOnServer + фильтр кэша).
+     * 2. Глобальный поиск публичных каналов, супергрупп и ботов (SearchPublicChats + SearchPublicChat).
+     * 3. Поиск по тексту сообщений во всех диалогах (SearchMessages).
+     */
+    suspend fun performGlobalSearch(query: String): GlobalSearchResult {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return GlobalSearchResult()
+
+        val cleanQuery = trimmed
+            .removePrefix("https://t.me/")
+            .removePrefix("http://t.me/")
+            .removePrefix("t.me/")
+            .removePrefix("@")
+            .trim()
+
+        val localChatIds = LinkedHashSet<Long>()
+
+        // 1. Быстрый поиск по уже загруженным в память чатам
+        val lowerQuery = trimmed.lowercase()
+        val lowerClean = cleanQuery.lowercase()
+        chatsMap.values.forEach { chat ->
+            if (chat.title.lowercase().contains(lowerQuery) ||
+                (lowerClean.isNotEmpty() && chat.title.lowercase().contains(lowerClean))
+            ) {
+                localChatIds.add(chat.id)
+            }
+        }
+
+        // 2. Поиск через TDLib SearchChats (офлайн база) и SearchChatsOnServer
+        try {
+            val localRes = execute(TdApi.SearchChats(trimmed, null, 30)).getOrNull()
+            localRes?.chatIds?.forEach { localChatIds.add(it) }
+        } catch (_: Exception) {}
+
+        try {
+            val serverRes = execute(TdApi.SearchChatsOnServer(trimmed, null, 30)).getOrNull()
+            serverRes?.chatIds?.forEach { localChatIds.add(it) }
+        } catch (_: Exception) {}
+
+        val resolvedLocalChats = mutableListOf<TdApi.Chat>()
+        for (id in localChatIds) {
+            val chat = chatsMap[id] ?: execute(TdApi.GetChat(id)).getOrNull()?.also {
+                chatsMap[it.id] = it
+                downloadChatPhoto(it)
+            }
+            if (chat != null) {
+                resolvedLocalChats.add(chat)
+            }
+        }
+
+        // 3. Глобальный поиск публичных чатов и каналов по username / названию
+        val publicChatIds = LinkedHashSet<Long>()
+        if (cleanQuery.length >= 3) {
+            try {
+                val exactChat = execute(TdApi.SearchPublicChat(cleanQuery)).getOrNull()
+                if (exactChat != null) {
+                    chatsMap[exactChat.id] = exactChat
+                    downloadChatPhoto(exactChat)
+                    if (!localChatIds.contains(exactChat.id)) {
+                        publicChatIds.add(exactChat.id)
+                    }
+                }
+            } catch (_: Exception) {}
+
+            try {
+                val pubRes = execute(TdApi.SearchPublicChats(cleanQuery, null)).getOrNull()
+                pubRes?.chatIds?.forEach { id ->
+                    if (!localChatIds.contains(id)) {
+                        publicChatIds.add(id)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        val resolvedPublicChats = mutableListOf<TdApi.Chat>()
+        for (id in publicChatIds) {
+            val chat = chatsMap[id] ?: execute(TdApi.GetChat(id)).getOrNull()?.also {
+                chatsMap[it.id] = it
+                downloadChatPhoto(it)
+            }
+            if (chat != null) {
+                resolvedPublicChats.add(chat)
+            }
+        }
+
+        // 4. Глобальный поиск по сообщениям во всех чатах
+        val foundMessageItems = mutableListOf<GlobalSearchMessageItem>()
+        try {
+            val msgRes = execute(
+                TdApi.SearchMessages(
+                    null,
+                    trimmed,
+                    "",
+                    35,
+                    null,
+                    null,
+                    0,
+                    0
+                )
+            ).getOrNull()
+
+            val rawMessages = msgRes?.messages.orEmpty()
+            for (msg in rawMessages) {
+                val chat = chatsMap[msg.chatId] ?: execute(TdApi.GetChat(msg.chatId)).getOrNull()?.also {
+                    chatsMap[it.id] = it
+                    downloadChatPhoto(it)
+                }
+                val cTitle = chat?.title?.ifBlank { "Чат ${msg.chatId}" } ?: "Чат ${msg.chatId}"
+                val sName = getSenderName(msg.senderId)
+                foundMessageItems.add(
+                    GlobalSearchMessageItem(
+                        message = msg,
+                        chatId = msg.chatId,
+                        chatTitle = cTitle,
+                        senderName = sName
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "SearchMessages warning: ${e.message}")
+        }
+
+        return GlobalSearchResult(
+            localChats = resolvedLocalChats,
+            publicChats = resolvedPublicChats,
+            messages = foundMessageItems
+        )
+    }
+
+    // ============================================================================
+    // Обработка внутренних и внешних ссылок Telegram + подписка на каналы
+    // ============================================================================
+
+    sealed class ResolvedLinkAction {
+        data class OpenChat(val chatId: Long, val chatTitle: String) : ResolvedLinkAction()
+        data class ProxyImported(val message: String) : ResolvedLinkAction()
+        data class OpenExternalWeb(val url: String) : ResolvedLinkAction()
+        data class Error(val message: String) : ResolvedLinkAction()
+    }
+
+    /**
+     * Разрешение любой ссылки (внутренней ссылки Telegram t.me / tg:// / @username или внешней веб-ссылки).
+     */
+    suspend fun resolveAndHandleLink(rawInput: String): ResolvedLinkAction {
+        val trimmed = rawInput.trim()
+        if (trimmed.isEmpty()) return ResolvedLinkAction.Error("Пустая ссылка")
+
+        // 1. Проверка на прокси-ссылку (tg://proxy, tg://socks, t.me/proxy, t.me/socks)
+        val lower = trimmed.lowercase()
+        if (lower.startsWith("tg://proxy") || lower.startsWith("tg://socks") ||
+            lower.contains("t.me/proxy?") || lower.contains("t.me/socks?")
+        ) {
+            val parsed = MtprotoScraper.parseFromText(trimmed)
+            if (parsed != null) {
+                val def = CompletableDeferred<ResolvedLinkAction>()
+                addOrUpdateProxy(parsed, testFirst = true) { ok, item ->
+                    if (ok) {
+                        selectProxy(item.id)
+                        def.complete(ResolvedLinkAction.ProxyImported("✓ Прокси ${item.displayAddress} подключен!"))
+                    } else {
+                        def.complete(ResolvedLinkAction.ProxyImported("Прокси ${item.displayAddress} добавлен в список, но сейчас не отвечает"))
+                    }
+                }
+                return withTimeoutOrNull(5000) { def.await() }
+                    ?: ResolvedLinkAction.ProxyImported("Прокси добавлен в список")
+            }
+        }
+
+        // 2. Проверка на упоминание @username
+        if (trimmed.startsWith("@") && trimmed.length > 1) {
+            val username = trimmed.removePrefix("@").substringBefore("/").substringBefore("?").trim()
+            return resolvePublicUsername(username)
+        }
+
+        // 3. Проверка на внутренние ссылки t.me / telegram.me / telegram.dog / tg://
+        val isTelegramDomain = lower.startsWith("https://t.me/") ||
+                lower.startsWith("http://t.me/") ||
+                lower.startsWith("t.me/") ||
+                lower.startsWith("https://telegram.me/") ||
+                lower.startsWith("https://telegram.dog/") ||
+                lower.startsWith("tg://")
+
+        if (isTelegramDomain) {
+            // 3.1. Пригласительные ссылки (t.me/+..., t.me/joinchat/..., tg://join?invite=...)
+            if (lower.contains("t.me/+") || lower.contains("t.me/joinchat/") || lower.startsWith("tg://join")) {
+                val normalizedInvite = if (lower.startsWith("t.me/")) "https://$trimmed" else trimmed
+                val infoRes = execute(TdApi.CheckChatInviteLink(normalizedInvite)).getOrNull()
+                if (infoRes != null && infoRes.chatId != 0L) {
+                    val chat = chatsMap[infoRes.chatId] ?: execute(TdApi.GetChat(infoRes.chatId)).getOrNull()?.also {
+                        chatsMap[it.id] = it
+                        downloadChatPhoto(it)
+                    }
+                    if (chat != null) {
+                        return ResolvedLinkAction.OpenChat(chat.id, chat.title)
+                    }
+                }
+                // Если еще не состоим в чате — присоединяемся по ссылке
+                val joinRes = execute(TdApi.JoinChatByInviteLink(normalizedInvite))
+                val joinObj = joinRes.getOrNull()
+                if (joinObj is TdApi.ChatJoinResultSuccess) {
+                    val chat = execute(TdApi.GetChat(joinObj.chatId)).getOrNull()?.also {
+                        chatsMap[it.id] = it
+                        downloadChatPhoto(it)
+                    }
+                    if (chat != null) {
+                        return ResolvedLinkAction.OpenChat(chat.id, chat.title)
+                    }
+                } else if (joinObj is TdApi.ChatJoinResultRequestSent) {
+                    return ResolvedLinkAction.Error("Заявка на вступление в закрытый чат отправлена администраторам")
+                }
+                return ResolvedLinkAction.Error("Не удалось открыть закрытую ссылку-приглашение")
+            }
+
+            // 3.2. Ссылка вида tg://resolve?domain=...
+            if (lower.startsWith("tg://resolve")) {
+                val domain = UriParamHelper.extractQueryParam(trimmed, "domain")
+                if (!domain.isNullOrBlank()) {
+                    return resolvePublicUsername(domain)
+                }
+            }
+
+            // 3.3. Ссылка на конкретное сообщение или пост (например https://t.me/channel/123 или https://t.me/c/12345/678)
+            val normalizedUrl = if (lower.startsWith("t.me/")) "https://$trimmed" else trimmed
+            val pathAfterTme = normalizedUrl
+                .substringAfter("://t.me/", "")
+                .substringAfter("://telegram.me/", "")
+                .substringAfter("://telegram.dog/", "")
+                .substringBefore("?")
+                .trim('/')
+
+            if (pathAfterTme.contains("/")) {
+                val msgLinkInfo = execute(TdApi.GetMessageLinkInfo(normalizedUrl)).getOrNull()
+                if (msgLinkInfo != null && msgLinkInfo.chatId != 0L) {
+                    val chat = chatsMap[msgLinkInfo.chatId] ?: execute(TdApi.GetChat(msgLinkInfo.chatId)).getOrNull()?.also {
+                        chatsMap[it.id] = it
+                        downloadChatPhoto(it)
+                    }
+                    if (chat != null) {
+                        return ResolvedLinkAction.OpenChat(chat.id, chat.title)
+                    }
+                }
+                // Fallback: открываем сам публичный канал по первой части пути
+                val firstSegment = pathAfterTme.substringBefore("/")
+                if (firstSegment.isNotBlank() && firstSegment != "c" && firstSegment != "s") {
+                    return resolvePublicUsername(firstSegment)
+                } else if (firstSegment == "s") {
+                    val channelSegment = pathAfterTme.substringAfter("s/").substringBefore("/")
+                    if (channelSegment.isNotBlank()) {
+                        return resolvePublicUsername(channelSegment)
+                    }
+                }
+            } else if (pathAfterTme.isNotBlank()) {
+                return resolvePublicUsername(pathAfterTme)
+            }
+        }
+
+        // 4. Все остальные ссылки — внешние веб-страницы
+        val webUrl = if (!lower.startsWith("http://") && !lower.startsWith("https://")) {
+            "https://$trimmed"
+        } else {
+            trimmed
+        }
+        return ResolvedLinkAction.OpenExternalWeb(webUrl)
+    }
+
+    private suspend fun resolvePublicUsername(rawUsername: String): ResolvedLinkAction {
+        val clean = rawUsername.trim().removePrefix("@").substringBefore("?").substringBefore("/")
+        if (clean.isEmpty()) return ResolvedLinkAction.Error("Некорректное имя пользователя")
+
+        val chatRes = execute(TdApi.SearchPublicChat(clean))
+        val chat = chatRes.getOrNull()
+        return if (chat != null) {
+            chatsMap[chat.id] = chat
+            downloadChatPhoto(chat)
+            refreshChatsList()
+            ResolvedLinkAction.OpenChat(chat.id, chat.title.ifBlank { "@$clean" })
+        } else {
+            ResolvedLinkAction.Error("Канал или пользователь @$clean не найден в Telegram")
+        }
+    }
+
+    /**
+     * Проверка, нужно ли пользователю подписаться / вступить в открытый канал или супергруппу.
+     */
+    suspend fun canJoinChat(chat: TdApi.Chat?): Boolean {
+        if (chat == null) return false
+        return when (val type = chat.type) {
+            is TdApi.ChatTypeSupergroup -> {
+                val sg = execute(TdApi.GetSupergroup(type.supergroupId)).getOrNull()
+                sg?.status is TdApi.ChatMemberStatusLeft
+            }
+            else -> false
+        }
+    }
+
+    /**
+     * Вступить в канал или супергруппу (Подписаться).
+     */
+    suspend fun joinChat(chatId: Long): Result<Boolean> {
+        val res = execute(TdApi.JoinChat(chatId))
+        return res.map { joinResult ->
+            val ok = joinResult is TdApi.ChatJoinResultSuccess
+            if (ok) {
+                execute(TdApi.GetChat(chatId)).getOrNull()?.let { updated ->
+                    chatsMap[updated.id] = updated
+                    refreshChatsList()
+                }
+            }
+            ok
+        }
+    }
+
+    private object UriParamHelper {
+        fun extractQueryParam(url: String, param: String): String? {
+            val query = url.substringAfter("?", "")
+            if (query.isEmpty()) return null
+            return query.split("&").mapNotNull { pair ->
+                val parts = pair.split("=", limit = 2)
+                if (parts.size == 2 && parts[0].equals(param, ignoreCase = true)) parts[1] else null
+            }.firstOrNull()
+        }
+    }
 }
+

@@ -540,7 +540,7 @@ class TdLibManager private constructor() {
                 Cybermasters TG TV
               </h1>
               <span className="px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 text-[10px] font-mono font-semibold border border-sky-500/30">
-                CMTGTV v1.0.44
+                CMTGTV v1.0.45
               </span>
             </div>
             <p className="text-xs text-zinc-400">
@@ -623,6 +623,15 @@ class TdLibManager private constructor() {
                       messages={chatMessages[selectedChat.id] || []}
                       onBack={() => setCurrentScreen('hub')}
                       onSendMessage={handleSendMessage}
+                      onNavigateToLink={(rawLink) => {
+                        const targetChat =
+                          chats.find((c) =>
+                            c.title.toLowerCase().includes(rawLink.replace('@', '').toLowerCase())
+                          ) || chats[1];
+                        if (targetChat) {
+                          setSelectedChat(targetChat);
+                        }
+                      }}
                     />
                   )}
 
