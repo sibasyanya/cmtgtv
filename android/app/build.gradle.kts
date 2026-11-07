@@ -12,8 +12,8 @@ android {
         applicationId = "com.tgmedia.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 46
-        versionName = "1.0.45"
+        versionCode = 47
+        versionName = "1.0.46"
 
         val envApiId = System.getenv("TG_API_ID")?.trim()
         val tgApiId = if (!envApiId.isNullOrEmpty() && envApiId.toIntOrNull() != null) envApiId else "279933"

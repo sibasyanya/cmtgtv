@@ -87,7 +87,9 @@ data class ExtractedLink(
     val url: String,
     val label: String,
     val isInternalTelegram: Boolean
-)
+) {
+    val displayLabel: String get() = label
+}
 
 /**
  * Парсер внутренних (@username, t.me/..., tg://...) и внешних (https://...) ссылок
@@ -109,6 +111,8 @@ object LinkExtractor {
                 u.startsWith("https://telegram.me/") ||
                 u.startsWith("https://telegram.dog/")
     }
+
+    fun isTelegramInternalUrl(rawUrl: String): Boolean = isInternalTelegramLink(rawUrl)
 
     private fun cleanPunctuation(raw: String): String {
         return raw.trimEnd('.', ',', ';', '!', '?', ')', ']', '}', '"', '\'')

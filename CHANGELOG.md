@@ -2,6 +2,14 @@
 
 Все важные изменения проекта Cybermasters TG TV (CMTGTV) фиксируются в этом файле.
 
+## [1.0.46] - 2026-11-07
+
+### Исправлено
+- **Исправление сборки Android APK в GitHub Actions (`TvChatDetailScreen.kt`):**
+  - Устранена ошибка компилятора Kotlin `Unresolved reference 'displayLabel'` в `ExtractedLink`: добавлен геттер-аксессор `displayLabel` к полю `label`.
+  - Устранена ошибка компилятора Kotlin `Unresolved reference 'isTelegramInternalUrl'` в `LinkExtractor`: добавлен псевдоним `isTelegramInternalUrl(...)` к методу проверки ссылок Telegram.
+  - Успешно проверена совместимость сборки и типизации.
+
 ## [1.0.45] - 2026-11-07
 
 ### Добавлено и улучшено
